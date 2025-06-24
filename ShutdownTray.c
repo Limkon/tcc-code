@@ -12,27 +12,28 @@
 #include <io.h>           // For _commit (for INI file flush)
 
 // For Resource Hacker icon embedding
-#define IDI_APPICON 101 // You would typically define this in a resource.h and include it
+#define IDI_APPICON 101 // 您通常会将其定义在 resource.h 中并包含它
 
-// --- Constants and Global Variables ---
-// Window Class Names
+// --- 常量和全局变量 ---
+// 窗口类名
 const WCHAR *MAIN_WINDOW_CLASS = L"ShutdownAssistantMainWindowClass";
 const WCHAR *HIDDEN_WINDOW_CLASS = L"ShutdownAssistantHiddenWindowClass";
-const WCHAR *MUTEX_NAME = L"Global\\ShutdownAssistantMutex"; // Global mutex name
+const WCHAR *MUTEX_NAME = L"Global\\ShutdownAssistantMutex"; // 全局互斥锁名称
 
-// Config file name
+// 配置文件名
 const WCHAR *CONFIG_FILE_BASE_NAME = L"config.ini";
-const WCHAR *CONFIG_SECTION_NAME = L"Settings"; // Section name in INI file
+// 修复：将 WWCHAR 更正为 WCHAR
+const WCHAR *CONFIG_SECTION_NAME = L"Settings"; // INI 文件中的节名称
 
-// Paths for config file (global, will store FULL ABSOLUTE path)
+// 配置文件路径（全局，将存储完整绝对路径）
 WCHAR g_config_file_path[MAX_PATH];
 
-// Timer IDs
+// 定时器 ID
 #define IDT_TIMER_CHECK_IDLE 2001
 #define IDT_TIMER_CHECK_TIMED_SHUTDOWN 2002
 #define IDT_TIMER_SHUTDOWN_COUNTDOWN 2003
 
-// GUI Control IDs
+// GUI 控件 ID
 #define IDC_CHK_AUTORUN             100
 #define IDC_CHK_TIMED_SHUTDOWN      101
 #define IDC_EDIT_SHUTDOWN_HOUR      102
@@ -40,45 +41,46 @@ WCHAR g_config_file_path[MAX_PATH];
 #define IDC_CHK_IDLE_SHUTDOWN       104
 #define IDC_EDIT_IDLE_MINUTES       105
 #define IDC_EDIT_COUNTDOWN_SECONDS  106
-// IDC_CHK_SHOW_WARNING (removed)
-#define IDC_CHK_HIDE_MAIN_WINDOW    108 // Hide main window on next launch
+// IDC_CHK_SHOW_WARNING (已移除)
+#define IDC_CHK_HIDE_MAIN_WINDOW    108 // 下次启动时隐藏主窗口
 #define IDC_BTN_SAVE_SETTINGS       109
 #define IDC_BTN_SHUTDOWN_NOW        110
-#define IDC_BTN_EXIT_APP            112 // Exit application button
-#define IDC_BTN_HIDE_PROGRAM        113 // New: Hide main window button (current launch)
+#define IDC_BTN_EXIT_APP            112 // 退出应用程序按钮
+#define IDC_BTN_HIDE_PROGRAM        113 // 新增：隐藏主窗口按钮（当前启动）
 
 
-// Global variables
-HWND g_hMainWindow = NULL; // Main GUI window handle
-HWND g_hHiddenWindow = NULL; // Hidden window handle for timers
-HANDLE g_hMutex = NULL; // Global mutex handle for single instance
-BOOL g_shutdown_executed_today = FALSE;
+// 全局变量
+HWND g_hMainWindow = NULL; // 主 GUI 窗口句柄
+HWND g_hHiddenWindow = NULL; // 用于定时器的隐藏窗口句柄
+HANDLE g_hMutex = NULL; // 用于单实例运行的全局互斥锁句柄
+BOOL g_shutdown_executed_today = FALSE; // 标记今天是否已执行过定时关机
+BOOL g_is_shutdown_pending = FALSE; // 标记是否已启动关机倒计时
 
-// --- Configuration Structure ---
+// --- 配置结构体 ---
 typedef struct {
-    BOOL enable_autorun;        // Whether to start automatically with Windows
-    BOOL enable_timed_shutdown; // Whether to enable scheduled shutdown
-    int shutdown_hour;          // Scheduled shutdown hour (0-23)
-    int shutdown_minute;        // Scheduled shutdown minute (0-59)
-    BOOL enable_idle_shutdown;  // Whether to enable idle shutdown
-    int idle_minutes;           // Minutes of inactivity before shutdown
-    int countdown_seconds;      // Seconds to countdown before executing shutdown command
-    // BOOL show_shutdown_warning; // Removed
-    BOOL hide_main_window;      // Whether to hide main window on next launch
+    BOOL enable_autorun;        // 是否随 Windows 自动启动
+    BOOL enable_timed_shutdown; // 是否启用定时关机
+    int shutdown_hour;          // 定时关机小时 (0-23)
+    int shutdown_minute;        // 定时关机分钟 (0-59)
+    BOOL enable_idle_shutdown;  // 是否启用空闲关机
+    int idle_minutes;           // 空闲多久（分钟）后关机
+    int countdown_seconds;      // 执行关机命令前的倒计时秒数
+    // BOOL show_shutdown_warning; // 已移除
+    BOOL hide_main_window;      // 下次启动时是否隐藏主窗口
 } AppConfig;
 
-AppConfig g_config; // Global configuration instance
+AppConfig g_config; // 全局配置实例
 
-// --- Function Prototypes ---
-// Window Procedures
+// --- 函数原型 ---
+// 窗口过程
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-// Helper to read boolean from INI file
+// 辅助函数：从 INI 文件读取布尔值
 BOOL GetPrivateProfileBoolW(LPCWSTR lpAppName, LPCWSTR lpKeyName, BOOL fDefault, LPCWSTR lpFileName);
-// Helper to write boolean to INI file
+// 辅助函数：向 INI 文件写入布尔值
 BOOL WritePrivateProfileBoolW(LPCWSTR lpAppName, LPCWSTR lpKeyName, BOOL fValue, LPCWSTR lpFileName);
-// Helper to write int to INI file (using WritePrivateProfileStringW)
+// 辅助函数：向 INI 文件写入整数值 (使用 WritePrivateProfileStringW)
 BOOL WritePrivateProfileIntW(LPCWSTR lpAppName, LPCWSTR lpKeyName, int iValue, LPCWSTR lpFileName);
 
 
@@ -93,19 +95,19 @@ void StopShutdownCountdown();
 void SetShutdownTimers();
 
 
-// Helper to read boolean from INI file
+// 辅助函数：从 INI 文件读取布尔值
 BOOL GetPrivateProfileBoolW(LPCWSTR lpAppName, LPCWSTR lpKeyName, BOOL fDefault, LPCWSTR lpFileName) {
-    WCHAR szRet[8]; // "true" or "false" + null terminator
+    WCHAR szRet[8]; // "true" 或 "false" + null 终止符
     GetPrivateProfileStringW(lpAppName, lpKeyName, fDefault ? L"true" : L"false", szRet, ARRAYSIZE(szRet), lpFileName);
     return (wcscmp(szRet, L"true") == 0);
 }
 
-// Helper to write boolean to INI file
+// 辅助函数：向 INI 文件写入布尔值
 BOOL WritePrivateProfileBoolW(LPCWSTR lpAppName, LPCWSTR lpKeyName, BOOL fValue, LPCWSTR lpFileName) {
     return WritePrivateProfileStringW(lpAppName, lpKeyName, fValue ? L"true" : L"false", lpFileName);
 }
 
-// Helper to write int to INI file (using WritePrivateProfileStringW)
+// 辅助函数：向 INI 文件写入整数值 (使用 WritePrivateProfileStringW)
 BOOL WritePrivateProfileIntW(LPCWSTR lpAppName, LPCWSTR lpKeyName, int iValue, LPCWSTR lpFileName) {
     WCHAR szValue[16];
     swprintf_s(szValue, ARRAYSIZE(szValue), L"%d", iValue);
@@ -113,9 +115,9 @@ BOOL WritePrivateProfileIntW(LPCWSTR lpAppName, LPCWSTR lpKeyName, int iValue, L
 }
 
 
-// --- Configuration Read/Write Functions ---
+// --- 配置读/写函数 ---
 BOOL LoadConfig(const WCHAR* configPath) {
-    // Initialize with default values. These will be overwritten by successful reads.
+    // 使用默认值初始化。这些值将被成功读取的数据覆盖。
     g_config.enable_autorun = FALSE;
     g_config.enable_timed_shutdown = FALSE;
     g_config.shutdown_hour = 0;
@@ -123,24 +125,24 @@ BOOL LoadConfig(const WCHAR* configPath) {
     g_config.enable_idle_shutdown = FALSE;
     g_config.idle_minutes = 0;
     g_config.countdown_seconds = 0;
-    // g_config.show_shutdown_warning = FALSE; // Removed
-    g_config.hide_main_window = FALSE;    // Default: show GUI
+    // g_config.show_shutdown_warning = FALSE; // 已移除
+    g_config.hide_main_window = FALSE;    // 默认：显示 GUI
 
-    // Check if config file exists using FindFirstFileW
+    // 使用 FindFirstFileW 检查配置文件是否存在
     WIN32_FIND_DATAW findData;
     HANDLE hFind = FindFirstFileW(configPath, &findData);
     if (hFind == INVALID_HANDLE_VALUE) {
-        // config.ini not found. Generate default config.
-        FindClose(hFind); // Close handle (even if invalid)
+        // config.ini 未找到。生成默认配置。
+        FindClose(hFind); // 关闭句柄（即使无效）
         
-        // --- MANUALLY CREATE AND WRITE DEFAULT CONFIG USING _wfopen ---
+        // --- 使用 _wfopen 手动创建并写入默认配置 ---
         FILE* f_create = _wfopen(configPath, L"w,ccs=UTF-16LE");
-        if (!f_create) { // If _wfopen fails, it's a critical error for file creation
+        if (!f_create) { // 如果 _wfopen 失败，则是文件创建的严重错误
              MessageBoxW(NULL, L"致命错误：无法创建配置文件！请检查程序权限。\n尝试将程序放在桌面或“文档”等有写入权限的目录。\n错误码: %lu", L"配置文件创建失败", MB_OK | MB_ICONERROR);
-             return FALSE; // Return FALSE if creation failed
+             return FALSE; // 如果创建失败则返回 FALSE
         }
         
-        // Write default INI content
+        // 写入默认 INI 内容
         fwprintf(f_create, L"[%ls]\n", CONFIG_SECTION_NAME);
         fwprintf(f_create, L"EnableAutorun=%ls\n", g_config.enable_autorun ? L"true" : L"false");
         fwprintf(f_create, L"EnableTimedShutdown=%ls\n", g_config.enable_timed_shutdown ? L"true" : L"false");
@@ -149,16 +151,16 @@ BOOL LoadConfig(const WCHAR* configPath) {
         fwprintf(f_create, L"EnableIdleShutdown=%ls\n", g_config.enable_idle_shutdown ? L"true" : L"false");
         fwprintf(f_create, L"IdleMinutes=%d\n", g_config.idle_minutes);
         fwprintf(f_create, L"CountdownSeconds=%d\n", g_config.countdown_seconds);
-        // fwprintf(f_create, L"ShowShutdownWarning=%ls\n", g_config.show_shutdown_warning ? L"true" : L"false"); // Removed
+        // fwprintf(f_create, L"ShowShutdownWarning=%ls\n", g_config.show_shutdown_warning ? L"true" : L"false"); // 已移除
         fwprintf(f_create, L"HideMainWindow=%ls\n", g_config.hide_main_window ? L"true" : L"false");
         
         fclose(f_create);
     } else {
-        // config.ini found.
+        // config.ini 已找到。
     }
-    FindClose(hFind); // Ensure handle is closed if file was found
+    FindClose(hFind); // 确保在找到文件时也关闭句柄
 
-    // Read values from INI file (whether just created or existing)
+    // 从 INI 文件读取值（无论是刚创建的还是已存在的）
     g_config.enable_autorun = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableAutorun", g_config.enable_autorun, configPath);
     g_config.enable_timed_shutdown = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableTimedShutdown", g_config.enable_timed_shutdown, configPath);
     g_config.shutdown_hour = GetPrivateProfileIntW(CONFIG_SECTION_NAME, L"ShutdownHour", g_config.shutdown_hour, configPath);
@@ -166,7 +168,7 @@ BOOL LoadConfig(const WCHAR* configPath) {
     g_config.enable_idle_shutdown = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableIdleShutdown", g_config.enable_idle_shutdown, configPath);
     g_config.idle_minutes = GetPrivateProfileIntW(CONFIG_SECTION_NAME, L"IdleMinutes", g_config.idle_minutes, configPath);
     g_config.countdown_seconds = GetPrivateProfileIntW(CONFIG_SECTION_NAME, L"CountdownSeconds", g_config.countdown_seconds, configPath);
-    // g_config.show_shutdown_warning = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath); // Removed
+    // g_config.show_shutdown_warning = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath); // 已移除
     g_config.hide_main_window = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"HideMainWindow", g_config.hide_main_window, configPath);
 
     return TRUE;
@@ -174,7 +176,7 @@ BOOL LoadConfig(const WCHAR* configPath) {
 
 BOOL SaveConfig(const WCHAR* configPath) {
     
-    // Write values to INI file
+    // 向 INI 文件写入值
     WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableAutorun", g_config.enable_autorun, configPath);
     WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableTimedShutdown", g_config.enable_timed_shutdown, configPath);
     WritePrivateProfileIntW(CONFIG_SECTION_NAME, L"ShutdownHour", g_config.shutdown_hour, configPath);
@@ -182,10 +184,10 @@ BOOL SaveConfig(const WCHAR* configPath) {
     WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableIdleShutdown", g_config.enable_idle_shutdown, configPath);
     WritePrivateProfileIntW(CONFIG_SECTION_NAME, L"IdleMinutes", g_config.idle_minutes, configPath);
     WritePrivateProfileIntW(CONFIG_SECTION_NAME, L"CountdownSeconds", g_config.countdown_seconds, configPath);
-    // WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath); // Removed
+    // WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath); // 已移除
     WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"HideMainWindow", g_config.hide_main_window, configPath);
 
-    // Force INI file writes to disk immediately
+    // 强制将 INI 文件写入磁盘
     if (WritePrivateProfileStringW(NULL, NULL, NULL, configPath) == 0) {
         return FALSE;
     }
@@ -193,7 +195,7 @@ BOOL SaveConfig(const WCHAR* configPath) {
     return TRUE;
 }
 
-// --- Autorun Functions ---
+// --- 自动运行函数 ---
 BOOL IsAutorunEnabled() {
     HKEY hKey;
     WCHAR path[MAX_PATH];
@@ -229,19 +231,40 @@ void SetAutorun(BOOL enable) {
     }
 }
 
-// --- Shutdown Functions ---
+// --- 关机函数 ---
 void InitiateShutdown(UINT countdown) {
+    // 如果已经有倒计时在进行，则不重复启动
+    if (g_is_shutdown_pending) {
+        return;
+    }
+
+    // 标记关机倒计时已启动
+    g_is_shutdown_pending = TRUE;
+
+    // 设置倒计时定时器 (先设置定时器，再显示弹窗)
+    // 即使弹窗阻塞了，定时器也已经在后台独立运行
     SetTimer(g_hHiddenWindow, IDT_TIMER_SHUTDOWN_COUNTDOWN, countdown * 1000, NULL);
+
+    // 显示倒计时开始提示
+    WCHAR szMessage[256];
+    swprintf_s(szMessage, ARRAYSIZE(szMessage), L"系统将在 %d 秒后关机。请保存您的工作。", countdown);
+    // 这里使用 MB_OK 即可，弹窗不应该阻止定时器运行，用户点不点“确定”都无所谓
+    MessageBoxW(g_hMainWindow, szMessage, L"关机提示", MB_OK | MB_ICONWARNING); 
 }
 
 void StopShutdownCountdown() {
     KillTimer(g_hHiddenWindow, IDT_TIMER_SHUTDOWN_COUNTDOWN);
+    g_is_shutdown_pending = FALSE; // 取消倒计时后，重置标志
+    // 可选：停止倒计时时，可以考虑在这里给用户一个提示
+    // MessageBoxW(g_hMainWindow, L"关机倒计时已取消。", L"提示", MB_OK | MB_ICONINFORMATION);
 }
 
-// --- Timer Management Functions ---
+// --- 定时器管理函数 ---
 void SetShutdownTimers() {
+    // 确保在重新设置定时器时，停止所有旧的定时器，特别是防止重复触发关机
     KillTimer(g_hHiddenWindow, IDT_TIMER_CHECK_IDLE);
     KillTimer(g_hHiddenWindow, IDT_TIMER_CHECK_TIMED_SHUTDOWN);
+    StopShutdownCountdown(); // 确保也停止了任何待处理的关机倒计时
 
     if (g_config.enable_idle_shutdown) {
         if (g_config.idle_minutes <= 0) {
@@ -257,13 +280,14 @@ void SetShutdownTimers() {
             g_config.shutdown_minute < 0 || g_config.shutdown_minute > 59) {
             g_config.enable_timed_shutdown = FALSE;
         } else {
+            // 定时器每分钟检查一次定时关机条件
             SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_TIMED_SHUTDOWN, 60 * 1000, NULL);
         }
     } else {
     }
 }
 
-// --- GUI Functions ---
+// --- GUI 函数 ---
 void ApplyConfigToGUI() {
     if (!g_hMainWindow) return;
 
@@ -307,15 +331,15 @@ void GetConfigFromGUI() {
     g_config.countdown_seconds = _wtoi(szTime);
 }
 
-// --- Main GUI Window Procedure ---
+// --- 主 GUI 窗口过程 ---
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
             g_hMainWindow = hWnd;
             int yPos = 20;
-            const int lineSpacing = 28; // Tighter spacing
-            const int labelWidth = 120; // Slightly narrower labels
-            const int checkboxColX = 145; // Consistent column for checkboxes/edits
+            const int lineSpacing = 28; // 更紧凑的行间距
+            const int labelWidth = 120; // 稍微窄的标签宽度
+            const int checkboxColX = 145; // 复选框/编辑框的统一列
             const int editWidthSmall = 35;
             const int editWidthLarge = 60;
             
@@ -346,11 +370,11 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             CreateWindowW(L"STATIC", L"秒", WS_VISIBLE | WS_CHILD, checkboxColX + 65, yPos, 40, 20, hWnd, NULL, NULL, NULL);
             yPos += lineSpacing;
 
-            // Removed "显示警告弹窗:" checkbox and "启用日志记录:" checkbox lines
+            // 移除的 "显示警告弹窗:" 复选框和 "启用日志记录:" 复选框行
             
             CreateWindowW(L"STATIC", L"下次启动隐藏界面:", WS_VISIBLE | WS_CHILD, 20, yPos, labelWidth + 30, 20, hWnd, NULL, NULL, NULL);
             CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxColX + 30, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_HIDE_MAIN_WINDOW, NULL, NULL);
-            yPos += lineSpacing + 15; // Extra spacing before buttons
+            yPos += lineSpacing + 15; // 按钮前的额外间距
 
             // 按钮布局 - 计算以居中
             RECT clientRect;
@@ -383,15 +407,14 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     MessageBoxW(hWnd, L"设置已保存并应用！", L"提示", MB_OK | MB_ICONINFORMATION);
                     break;
                 case IDC_BTN_SHUTDOWN_NOW:
-                    // Stop any existing countdown before initiating a new one
-                    StopShutdownCountdown(); 
+                    // 立即关机按钮应始终尝试启动倒计时，但要确保不重复启动
                     InitiateShutdown(g_config.countdown_seconds);
                     break;
-                case IDC_BTN_HIDE_PROGRAM: // Handle new hide button
+                case IDC_BTN_HIDE_PROGRAM: // 处理新的隐藏按钮
                     ShowWindow(hWnd, SW_HIDE);
                     break;
                 case IDC_BTN_EXIT_APP:
-                    // Destroy the hidden window, which will post WM_QUIT
+                    // 销毁隐藏窗口，这将发布 WM_QUIT 消息
                     DestroyWindow(g_hHiddenWindow);
                     break;
             }
@@ -399,18 +422,18 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
         case WM_CLOSE:
-            // When user clicks 'X' button, hide the window instead of destroying it
+            // 当用户点击“X”按钮时，隐藏窗口而不是销毁它
             ShowWindow(hWnd, SW_HIDE);
             break;
 
         case WM_DESTROY:
-            // This message is handled by PostQuitMessage in HiddenWindowProc when DestroyWindow is called
+            // 此消息由 HiddenWindowProc 中的 PostQuitMessage 处理，当调用 DestroyWindow 时
             break;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-// --- Hidden Window Procedure (for Timers) ---
+// --- 隐藏窗口过程 (用于定时器) ---
 LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE:
@@ -419,77 +442,83 @@ LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
 
         case WM_TIMER:
             if (LOWORD(wParam) == IDT_TIMER_CHECK_IDLE) {
-                // To trigger idle shutdown only once, kill this timer
-                KillTimer(hWnd, IDT_TIMER_CHECK_IDLE); 
-                InitiateShutdown(g_config.countdown_seconds);
+                // 如果空闲关机已启用且当前没有待处理的关机倒计时
+                if (g_config.enable_idle_shutdown && !g_is_shutdown_pending) {
+                    // 为了只触发一次空闲关机，杀死这个定时器（直到下次重新满足条件）
+                    KillTimer(hWnd, IDT_TIMER_CHECK_IDLE); 
+                    InitiateShutdown(g_config.countdown_seconds);
+                }
 
             } else if (LOWORD(wParam) == IDT_TIMER_CHECK_TIMED_SHUTDOWN) {
                 SYSTEMTIME st;
                 GetLocalTime(&st);
 
-                // Reset shutdown_executed_today at midnight
+                // 在午夜重置 shutdown_executed_today 标志
                 if (st.wHour == 0 && st.wMinute == 0 && g_shutdown_executed_today) {
                     g_shutdown_executed_today = FALSE;
                 }
 
-                if (g_config.enable_timed_shutdown && !g_shutdown_executed_today) {
+                // 如果定时关机已启用，今天尚未执行，并且当前没有待处理的关机倒计时
+                if (g_config.enable_timed_shutdown && !g_shutdown_executed_today && !g_is_shutdown_pending) {
                     int currentTimeInMinutes = st.wHour * 60 + st.wMinute;
                     int scheduledTimeInMinutes = g_config.shutdown_hour * 60 + g_config.shutdown_minute;
 
                     if (currentTimeInMinutes >= scheduledTimeInMinutes) {
                         InitiateShutdown(g_config.countdown_seconds);
-                        g_shutdown_executed_today = TRUE;
+                        g_shutdown_executed_today = TRUE; // 标记今天已执行
                     } else {
                     }
                 }
             } else if (LOWORD(wParam) == IDT_TIMER_SHUTDOWN_COUNTDOWN) {
-                KillTimer(hWnd, IDT_TIMER_SHUTDOWN_COUNTDOWN); // Stop countdown timer
+                KillTimer(hWnd, IDT_TIMER_SHUTDOWN_COUNTDOWN); // 停止倒计时定时器
+                g_is_shutdown_pending = FALSE; // 倒计时结束，重置标志
 
                 STARTUPINFOW si = { sizeof(si) };
                 PROCESS_INFORMATION pi = {0};
                 si.dwFlags = STARTF_USESHOWWINDOW;
-                si.wShowWindow = SW_HIDE; // Hide the command prompt window
+                si.wShowWindow = SW_HIDE; // 隐藏命令提示符窗口
 
-                WCHAR cmdLine[] = L"shutdown.exe -s -t 0"; // Shutdown command
+                WCHAR cmdLine[] = L"shutdown.exe -s -t 0"; // 关机命令
                 
                 if (CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE,
                                     CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
                     CloseHandle(pi.hProcess);
                     CloseHandle(pi.hThread);
                 } else {
-                    // Critical error: Failed to execute shutdown.exe
-                    // In a production app, you might log this or show a critical message
+                    // 严重错误：未能执行 shutdown.exe
+                    MessageBoxW(NULL, L"执行关机命令失败！请检查权限。", L"关机错误", MB_OK | MB_ICONERROR);
                 }
-                PostQuitMessage(0); // Exit the application after initiating shutdown
+                PostQuitMessage(0); // 启动关机后退出应用程序
             }
             break;
 
         case WM_ENDSESSION:
-            // Handle system shutdown/logoff by cleaning up timers
+            // 处理系统关机/注销，清理定时器
             if (wParam == TRUE) {
                 KillTimer(hWnd, IDT_TIMER_CHECK_IDLE);
                 KillTimer(hWnd, IDT_TIMER_CHECK_TIMED_SHUTDOWN);
                 KillTimer(hWnd, IDT_TIMER_SHUTDOWN_COUNTDOWN);
+                g_is_shutdown_pending = FALSE; // 会话结束前，重置标志
             }
-            return 0; // Return 0 to allow session to end
+            return 0; // 返回 0 允许会话结束
         case WM_QUERYENDSESSION:
-            return TRUE; // Allow system to shutdown/logoff
+            return TRUE; // 允许系统关机/注销
         case WM_DESTROY:
-            PostQuitMessage(0); // Post quit message to end the message loop
+            PostQuitMessage(0); // 发布退出消息以结束消息循环
             break;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
 
-// --- Program Entry Point ---
+// --- 程序入口点 ---
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int nCmdShow) {
-    // --- Set Current Working Directory (This remains the executable's directory) ---
+    // --- 设置当前工作目录（仍为可执行文件目录） ---
     WCHAR exeDir[MAX_PATH];
     GetModuleFileNameW(NULL, exeDir, MAX_PATH);
     WCHAR* p = wcsrchr(exeDir, L'\\');
     if (p != NULL) {
-        *p = L'\0'; // Null-terminate to get only the directory path
+        *p = L'\0'; // Null-terminate 以只获取目录路径
         if (!SetCurrentDirectoryW(exeDir)) {
             MessageBoxW(NULL, L"致命错误：无法设置程序工作目录！请检查程序权限或放置位置。", L"程序启动失败", MB_OK | MB_ICONERROR);
             return 1;
@@ -499,11 +528,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
         return 1;
     }
 
-    // --- Determine config file path (now absolute path in program directory) ---
+    // --- 确定配置文件路径（现在是程序目录中的绝对路径） ---
     swprintf_s(g_config_file_path, ARRAYSIZE(g_config_file_path), L"%s\\%s", exeDir, CONFIG_FILE_BASE_NAME);
 
-    // --- Initial file write permission test (for config.ini) ---
-    FILE* testConfigFile = _wfopen(g_config_file_path, L"a"); // "a" mode to append (creates if not exists)
+    // --- 初始文件写入权限测试（针对 config.ini） ---
+    FILE* testConfigFile = _wfopen(g_config_file_path, L"a"); // "a" 模式用于追加（如果不存在则创建）
     if (!testConfigFile) {
         MessageBoxW(NULL,
                     L"致命错误：程序所在目录无写入权限！\n\n"
@@ -512,9 +541,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
                     L"权限不足，无法启动", MB_OK | MB_ICONERROR);
         return 1;
     }
-    fclose(testConfigFile); // Close the test file immediately
+    fclose(testConfigFile); // 立即关闭测试文件
 
-    // --- Mutex to ensure single instance ---
+    // --- 互斥锁以确保单实例运行 ---
     g_hMutex = CreateMutexW(NULL, TRUE, MUTEX_NAME);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND existing_hwnd = FindWindowW(MAIN_WINDOW_CLASS, NULL);
@@ -524,23 +553,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
             SetWindowPos(existing_hwnd, HWND_NOTOPMOST, 0,0,0,0, SWP_NOMOVE | SWP_NOSIZE);
             SetForegroundWindow(existing_hwnd);
         } else {
-            // No message for duplicate instance if main window is not found.
+            // 如果未找到主窗口，则不显示重复实例消息。
         }
         if (g_hMutex) CloseHandle(g_hMutex);
         return 0;
     }
     
-    // --- Load Configuration (will generate if not found) ---
+    // --- 加载配置（如果未找到将生成） ---
     if (!LoadConfig(g_config_file_path)) {
-        // Fatal error message box already shown in LoadConfig
+        // LoadConfig 中已显示致命错误消息框
         if (g_hMutex) CloseHandle(g_hMutex);
         return 1;
     }
     
-    // --- Set Autorun after config is loaded ---
+    // --- 加载配置后设置自动运行 ---
     SetAutorun(g_config.enable_autorun);
 
-    // Initialize g_shutdown_executed_today flag
+    // 初始化 g_shutdown_executed_today 标志
     SYSTEMTIME st_init;
     GetLocalTime(&st_init);
     int currentTimeInMinutes_init = st_init.wHour * 60 + st_init.wMinute;
@@ -551,73 +580,76 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     } else {
         g_shutdown_executed_today = FALSE;
     }
+    
+    // 初始化 g_is_shutdown_pending 标志
+    g_is_shutdown_pending = FALSE;
 
-    // --- Register Window Classes ---
+    // --- 注册窗口类 ---
     WNDCLASSW wc = {0};
-    wc.lpfnWndProc = MainWindowProc; // Main window procedure
+    wc.lpfnWndProc = MainWindowProc; // 主窗口过程
     wc.hInstance = hInstance;
     wc.lpszClassName = MAIN_WINDOW_CLASS;
-    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCE(IDI_APPICON)); // Load icon from resources (for Resource Hacker)
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); // A standard gray background
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCE(IDI_APPICON)); // 从资源加载图标 (用于 Resource Hacker)
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); // 标准灰色背景
     if (!RegisterClassW(&wc)) {
         MessageBoxW(NULL, L"致命错误：无法注册主窗口类！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
         if (g_hMutex) CloseHandle(g_hMutex); return 1;
     }
 
-    wc.lpfnWndProc = HiddenWindowProc; // Hidden window procedure
+    wc.lpfnWndProc = HiddenWindowProc; // 隐藏窗口过程
     wc.lpszClassName = HIDDEN_WINDOW_CLASS;
-    wc.hIcon = NULL; // Hidden window needs no icon
-    wc.hbrBackground = NULL; // No background for hidden window
+    wc.hIcon = NULL; // 隐藏窗口不需要图标
+    wc.hbrBackground = NULL; // 隐藏窗口没有背景
     if (!RegisterClassW(&wc)) {
         MessageBoxW(NULL, L"致命错误：无法注册隐藏窗口类！程序将无法接收定时器消息。", L"程序启动失败", MB_OK | MB_ICONERROR);
         if (g_hMutex) CloseHandle(g_hMutex); return 1;
     }
 
-    // --- Create Hidden Window (must exist for timers) ---
+    // --- 创建隐藏窗口（必须存在才能使用定时器） ---
     g_hHiddenWindow = CreateWindowExW(0, HIDDEN_WINDOW_CLASS, L"ShutdownAssistantHiddenWindow", 0, 0, 0, 0, 0, NULL, NULL, hInstance, NULL);
     if (!g_hHiddenWindow) {
         MessageBoxW(NULL, L"致命错误：无法创建隐藏窗口！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
         if (g_hMutex) CloseHandle(g_hMutex); return 1;
     }
 
-    // --- Decide whether to show main window or hide it ---
+    // --- 决定是显示主窗口还是隐藏它 ---
     int initialCmdShow;
     if (g_config.hide_main_window) {
-        initialCmdShow = SW_HIDE; // Start hidden
+        initialCmdShow = SW_HIDE; // 启动时隐藏
     } else {
-        initialCmdShow = SW_SHOW; // Show main window
+        initialCmdShow = SW_SHOW; // 显示主窗口
     }
 
-    // --- Create Main GUI Window ---
+    // --- 创建主 GUI 窗口 ---
     g_hMainWindow = CreateWindowExW(
         0, MAIN_WINDOW_CLASS, L"定时空闲关机助手", // 窗口标题改为简体
-        WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, // Standard window styles
-        CW_USEDEFAULT, CW_USEDEFAULT, 430, 250, // Adjusted Width and Height for better, more compact layout
+        WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, // 标准窗口样式
+        CW_USEDEFAULT, CW_USEDEFAULT, 430, 250, // 调整宽度和高度以获得更好、更紧凑的布局
         NULL, NULL, hInstance, NULL);
 
     if (!g_hMainWindow) {
         MessageBoxW(NULL, L"致命错误：无法创建主界面窗口！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
-        DestroyWindow(g_hHiddenWindow); // Clean up hidden window too
+        DestroyWindow(g_hHiddenWindow); // 也清理隐藏窗口
         if (g_hMutex) CloseHandle(g_hMutex); return 1;
     }
     
-    // --- Apply initial config to GUI controls ---
+    // --- 将初始配置应用于 GUI 控件 ---
     ApplyConfigToGUI();
 
-    ShowWindow(g_hMainWindow, initialCmdShow); // Show or hide based on config
+    ShowWindow(g_hMainWindow, initialCmdShow); // 根据配置显示或隐藏
     UpdateWindow(g_hMainWindow);
 
-    // --- Set up shutdown timers based on loaded config ---
+    // --- 根据加载的配置设置关机定时器 ---
     SetShutdownTimers();
 
-    // --- Message Loop ---
+    // --- 消息循环 ---
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 
-    // --- Cleanup on Exit ---
+    // --- 退出时清理 ---
     if (g_hMutex) CloseHandle(g_hMutex);
     UnregisterClassW(MAIN_WINDOW_CLASS, hInstance);
     UnregisterClassW(HIDDEN_WINDOW_CLASS, hInstance);
