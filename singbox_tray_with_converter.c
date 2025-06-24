@@ -4,10 +4,10 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
-#include <stdio.h>     // For FILE, fopen, fclose, fseek, ftell, fread, sscanf
-#include <stdlib.h>    // For malloc, free
-#include <string.h>    // For strstr, strchr, strncpy, strlen, strcpy
-#include <wchar.h>     // For wcscpy, wcslen, MultiByteToWideChar, WideCharToMultiByte, swprintf, wcsrchr (for _snwprintf)
+#include <stdio.h>    // For FILE, fopen, fclose, fseek, ftell, fread, sscanf
+#include <stdlib.h>   // For malloc, free
+#include <string.h>   // For strstr, strchr, strncpy, strlen, strcpy
+#include <wchar.h>    // For wcscpy, wcslen, MultiByteToWideChar, WideCharToMultiByte, swprintf, wcsrchr (for _snwprintf)
 #include <wininet.h> // For InternetSetOptionW
 
 #define WM_TRAY (WM_USER + 1)
@@ -185,7 +185,7 @@ void StartSingBox() {
 void StopSingBox() {
     if (pi.hProcess) {
         if (TerminateProcess(pi.hProcess, 0)) {
-              WaitForSingleObject(pi.hProcess, 5000);
+             WaitForSingleObject(pi.hProcess, 5000);
         }
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
@@ -573,22 +573,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
     ZeroMemory(&pi, sizeof(pi));
 
-    // Attempt to parse tags with retries
-    int retry_count = 0;
-    const int MAX_RETRIES = 3;
-    const int RETRY_DELAY_MS = 10000; // 10 seconds
-
-    while (retry_count < MAX_RETRIES) {
-        if (ParseTags()) {
-            break;
-        }
-        retry_count++;
-        if (retry_count < MAX_RETRIES) {
-            Sleep(RETRY_DELAY_MS);
-        }
-    }
-
-    if (retry_count == MAX_RETRIES && !ParseTags()) {
+    // 尝试解析标签，如果失败则直接退出
+    if (!ParseTags()) {
         MessageBoxW(NULL, L"无法读取 config.json 文件，请确保其存在且格式正确。程序将退出。", L"错误", MB_OK | MB_ICONERROR);
         if (hMutex) CloseHandle(hMutex);
         return 1;
