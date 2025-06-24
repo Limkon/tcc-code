@@ -3,13 +3,13 @@
 
 #define _WIN32_WINNT 0x0501 // For Windows XP compatibility
 
-#include <windows.h>    
-#include <stdio.h>      // For FILE operations (for config.ini), sscanf, fprintf
-#include <stdlib.h>     // For malloc, free
-#include <string.h>     // For strlen, strcpy, strstr, strchr, strncpy
-#include <wchar.h>      // For wide character string operations, wcscmp, wcsstr etc.
-#include <time.h>       // For time-related functions
-#include <io.h>         // For _commit (for INI file flush)
+#include <windows.h>      
+#include <stdio.h>        // For FILE operations (for config.ini), sscanf, fprintf
+#include <stdlib.h>       // For malloc, free
+#include <string.h>       // For strlen, strcpy, strstr, strchr, strncpy
+#include <wchar.h>        // For wide character string operations, wcscmp, wcsstr etc.
+#include <time.h>         // For time-related functions
+#include <io.h>           // For _commit (for INI file flush)
 
 // For Resource Hacker icon embedding
 #define IDI_APPICON 101 // You would typically define this in a resource.h and include it
@@ -216,7 +216,7 @@ void SetAutorun(BOOL enable) {
     GetModuleFileNameW(NULL, path, MAX_PATH);
 
     LONG createRes = RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                                     0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
+                                      0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
     if (createRes == ERROR_SUCCESS) {
         if (enable) {
             RegSetValueExW(hKey, L"ShutdownTray", 0, REG_SZ, (BYTE*)path,
@@ -318,10 +318,11 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             const int checkboxColX = 145; // Consistent column for checkboxes/edits
             const int editWidthSmall = 35;
             const int editWidthLarge = 60;
-            const int buttonWidth = 90;
-            const int buttonHeight = 30;
-            const int buttonHorizontalSpacing = 10;
-
+            
+            // 更小的按钮尺寸
+            const int buttonWidth = 75; 
+            const int buttonHeight = 25;
+            const int buttonHorizontalSpacing = 8; // 稍微减少间距
 
             CreateWindowW(L"STATIC", L"开机启动:", WS_VISIBLE | WS_CHILD, 20, yPos, labelWidth, 20, hWnd, NULL, NULL, NULL);
             CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxColX, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_AUTORUN, NULL, NULL);
@@ -351,13 +352,20 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxColX + 30, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_HIDE_MAIN_WINDOW, NULL, NULL);
             yPos += lineSpacing + 15; // Extra spacing before buttons
 
-            // Buttons layout
-            int btnX = 20;
+            // 按钮布局 - 计算以居中
+            RECT clientRect;
+            GetClientRect(hWnd, &clientRect);
+            int windowWidth = clientRect.right - clientRect.left;
+
+            // 所有按钮加间距的总宽度
+            int totalButtonsWidth = (buttonWidth * 4) + (buttonHorizontalSpacing * 3);
+            int btnX = (windowWidth - totalButtonsWidth) / 2; // 计算起始 X 坐标以居中
+
             CreateWindowW(L"BUTTON", L"保存设置", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, btnX, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_SAVE_SETTINGS, NULL, NULL);
             btnX += buttonWidth + buttonHorizontalSpacing;
             CreateWindowW(L"BUTTON", L"立即关机", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, btnX, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_SHUTDOWN_NOW, NULL, NULL);
             btnX += buttonWidth + buttonHorizontalSpacing;
-            CreateWindowW(L"BUTTON", L"隐藏程序", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, btnX, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_HIDE_PROGRAM, NULL, NULL); // New Hide button
+            CreateWindowW(L"BUTTON", L"隐藏程序", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, btnX, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_HIDE_PROGRAM, NULL, NULL); // 新增隐藏按钮
             btnX += buttonWidth + buttonHorizontalSpacing;
             CreateWindowW(L"BUTTON", L"退出程序", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, btnX, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_EXIT_APP, NULL, NULL);
 
@@ -498,10 +506,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     FILE* testConfigFile = _wfopen(g_config_file_path, L"a"); // "a" mode to append (creates if not exists)
     if (!testConfigFile) {
         MessageBoxW(NULL,
-                     L"致命错误：程序所在目录无写入权限！\n\n"
-                     L"请将本程序 (ShutdownTray.exe) 移动到桌面、文档、下载等您拥有完全写入权限的目录，然后再次运行。\n"
-                     L"错误码: %lu",
-                     L"权限不足，无法启动", MB_OK | MB_ICONERROR);
+                    L"致命错误：程序所在目录无写入权限！\n\n"
+                    L"请将本程序 (ShutdownTray.exe) 移动到桌面、文档、下载等您拥有完全写入权限的目录，然后再次运行。\n"
+                    L"错误码: %lu",
+                    L"权限不足，无法启动", MB_OK | MB_ICONERROR);
         return 1;
     }
     fclose(testConfigFile); // Close the test file immediately
@@ -582,7 +590,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
     // --- Create Main GUI Window ---
     g_hMainWindow = CreateWindowExW(
-        0, MAIN_WINDOW_CLASS, L"定时空闲关机助手",
+        0, MAIN_WINDOW_CLASS, L"定时空闲关机助手", // 窗口标题改为简体
         WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, // Standard window styles
         CW_USEDEFAULT, CW_USEDEFAULT, 430, 250, // Adjusted Width and Height for better, more compact layout
         NULL, NULL, hInstance, NULL);
