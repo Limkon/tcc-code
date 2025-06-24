@@ -40,6 +40,12 @@
             min-height: 150px;
             box-sizing: border-box; /* Include padding in width */
         }
+        .button-group {
+            display: flex;
+            justify-content: center;
+            gap: 15px; /* Add space between buttons */
+            margin-bottom: 20px;
+        }
         button {
             background-color: #007bff;
             color: white;
@@ -48,14 +54,16 @@
             border-radius: 5px;
             cursor: pointer;
             font-size: 16px;
-            display: block;
-            width: 100%;
-            max-width: 200px;
-            margin: 0 auto 20px auto;
+            flex-grow: 1; /* Allow buttons to grow */
+            max-width: 150px; /* Limit individual button width */
             transition: background-color 0.3s ease;
         }
         button:hover {
             background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
         }
         pre {
             background-color: #eee;
@@ -81,7 +89,10 @@
         <label for="nodeInput">请输入节点信息 (每行一个):</label>
         <textarea id="nodeInput"></textarea>
 
-        <button onclick="convertNodes()">转换</button>
+        <div class="button-group">
+            <button onclick="convertNodes()">转换</button>
+            <button id="saveButton" onclick="saveConfig()" disabled>保存为 config.json</button>
+        </div>
 
         <label for="outputConfig">生成的配置文件:</label>
         <textarea id="outputConfig" readonly></textarea>
@@ -104,7 +115,7 @@
                 // 3. 使用 atob() 进行 Base64 解码。atob() 返回一个 "二进制字符串" (Latin-1 编码)
                 const binary_string = atob(str);
 
-                // 4. 将二进制字符串转换为 Uint8Array 字节数组
+                // 4. 将二进制字符串转换为 Uint8Array字节数组
                 const len = binary_string.length;
                 const bytes = new Uint8Array(new ArrayBuffer(len));
                 for (let i = 0; i < len; i++) {
@@ -126,7 +137,6 @@
             try {
                 const protocol = url.split('://')[0].toLowerCase();
                 if (protocol === 'vmess') {
-                    // Extract Base64 string after 'vmess://'
                     const base64Str = url.replace('vmess://', '').trim();
                     const decoded = base64Decode(base64Str);
                     if (!decoded) {
@@ -146,26 +156,61 @@
                         sni: vmessObj.sni,
                         scy: vmessObj.scy
                     };
-                } else {
-                    const urlObj = new URL(url);
-                    const protocol = urlObj.protocol.slice(0, -1); // Remove trailing ':'
-                    const hash = urlObj.hash ? decodeURIComponent(urlObj.hash.substring(1)) : '';
-                    const queryParams = Object.fromEntries(urlObj.searchParams.entries());
+                } else if (protocol === 'trojan' || protocol === 'vless') {
+                    // Split the URL manually to get userinfo, host, port, and query params
+                    const parts = url.split('://')[1].split('#');
+                    const corePart = parts[0]; // "password@host:port?params" or "uuid@host:port?params"
+                    const hashPart = parts.length > 1 ? decodeURIComponent(parts[1]) : ''; // "#tag"
 
-                    let userInfo = urlObj.username; // For Trojan, VLESS
-                    let port = urlObj.port || (urlObj.protocol === 'https:' ? '443' : '80'); // Default ports
-                    let server = urlObj.hostname;
+                    let userInfo = '';
+                    let hostPortQuery = corePart;
 
-                    if (protocol === 'trojan' || protocol === 'vless') {
-                        return {
-                            type: protocol,
-                            userInfo: userInfo,
-                            server: server,
-                            port: port,
-                            params: queryParams,
-                            tag: hash || server
-                        };
+                    // Check if userinfo exists (contains '@')
+                    if (corePart.includes('@')) {
+                        const userInfoSplit = corePart.split('@');
+                        userInfo = userInfoSplit[0];
+                        hostPortQuery = userInfoSplit[1];
                     }
+
+                    let host = '';
+                    let port = '';
+                    let queryString = '';
+
+                    // Split host:port?params
+                    const querySplit = hostPortQuery.split('?');
+                    const hostPort = querySplit[0];
+                    if (querySplit.length > 1) {
+                        queryString = querySplit[1];
+                    }
+
+                    const hostPortSplit = hostPort.split(':');
+                    host = hostPortSplit[0];
+                    if (hostPortSplit.length > 1) {
+                        port = hostPortSplit[1];
+                    }
+
+                    // Manually parse query parameters
+                    const queryParams = {};
+                    if (queryString) {
+                        queryString.split('&').forEach(param => {
+                            const [key, value] = param.split('=');
+                            if (key) {
+                                queryParams[key] = value ? decodeURIComponent(value.replace(/\+/g, ' ')) : '';
+                            }
+                        });
+                    }
+                    
+                    // Determine port, preferring explicit port, then security-based default
+                    const finalPort = port ? parseInt(port, 10) : (queryParams.security === 'tls' ? 443 : 80);
+
+                    return {
+                        type: protocol,
+                        userInfo: userInfo,
+                        server: host,
+                        port: finalPort,
+                        params: queryParams,
+                        tag: hashPart || host // Use hash as tag, fallback to host
+                    };
                 }
             } catch (e) {
                 console.error("Error parsing URL:", url, e);
@@ -178,12 +223,15 @@
             const nodeInput = document.getElementById('nodeInput').value;
             const outputConfig = document.getElementById('outputConfig');
             const errorMessage = document.getElementById('errorMessage');
+            const saveButton = document.getElementById('saveButton');
+
             errorMessage.textContent = '';
             outputConfig.value = '';
+            saveButton.disabled = true; // Disable save button initially
 
             const nodeUrls = nodeInput.split('\n').map(line => line.trim()).filter(line => line.length > 0);
             const outbounds = [];
-            let defaultVlessTag = '';
+            let defaultRouteOutboundTag = '';
 
             nodeUrls.forEach(url => {
                 const parsed = parseUrl(url);
@@ -193,54 +241,52 @@
                 }
 
                 if (parsed.type === 'trojan') {
-                    const tag = parsed.tag.replace(/[^a-zA-Z0-9-]/g, '_');
+                    const tag = (parsed.tag || parsed.server).replace(/[^a-zA-Z0-9.\-_]/g, '_');
                     outbounds.push({
                         type: "trojan",
                         tag: `${tag}-trojan`,
-                        server: parsed.params.host || parsed.server,
-                        server_port: parseInt(parsed.port, 10),
+                        server: parsed.server,
+                        server_port: parsed.port,
                         password: parsed.userInfo,
                         tls: {
                             enabled: parsed.params.security === 'tls',
                             server_name: parsed.params.sni || parsed.params.host || parsed.server
                         },
                         transport: {
-                            type: parsed.params.type,
-                            path: decodeURIComponent(parsed.params.path || ''),
+                            type: parsed.params.type || 'tcp',
+                            path: parsed.params.path ? decodeURIComponent(parsed.params.path) : '',
                             headers: {
                                 Host: parsed.params.host || parsed.server
                             }
                         }
                     });
                 } else if (parsed.type === 'vless') {
-                    const tag = parsed.tag.replace(/[^a-zA-Z0-9-]/g, '_');
+                    const tag = (parsed.tag || parsed.server).replace(/[^a-zA-Z0-9.\-_]/g, '_');
                     const currentVlessTag = `${tag}-vless`;
                     outbounds.push({
                         type: "vless",
                         tag: currentVlessTag,
-                        server: parsed.params.host || parsed.server,
-                        server_port: parseInt(parsed.port, 10),
+                        server: parsed.server,
+                        server_port: parsed.port,
                         uuid: parsed.userInfo,
                         tls: {
                             enabled: parsed.params.security === 'tls',
                             server_name: parsed.params.sni || parsed.params.host || parsed.server
                         },
                         transport: {
-                            type: parsed.params.type,
-                            path: decodeURIComponent(parsed.params.path || ''),
+                            type: parsed.params.type || 'tcp',
+                            path: parsed.params.path ? decodeURIComponent(parsed.params.path) : '',
                             headers: {
                                 Host: parsed.params.host || parsed.server
                             }
                         }
                     });
-                    if (!defaultVlessTag) {
-                        defaultVlessTag = currentVlessTag;
+                    if (!defaultRouteOutboundTag) {
+                        defaultRouteOutboundTag = currentVlessTag;
                     }
                 } else if (parsed.type === 'vmess') {
                     let tag = parsed.ps || parsed.server;
-                    // 对 tag 进行更严格的清理，确保它只包含 ASCII 字符，因为它是配置中的标识符
-                    // 移除所有非字母数字、非点、非下划线、非短横线的字符
-                    tag = tag.replace(/[^a-zA-Z0-9.\-_]/g, '_'); 
+                    tag = tag.replace(/[^a-zA-Z0-9.\-_]/g, '_');
 
                     const vmessOutbound = {
                         type: "vmess",
@@ -250,7 +296,7 @@
                         uuid: parsed.uuid,
                         security: parsed.scy || "auto",
                         transport: {
-                            type: parsed.net,
+                            type: parsed.net || 'tcp',
                             path: parsed.path || '',
                             headers: {
                                 Host: parsed.host || ''
@@ -266,6 +312,9 @@
                     }
 
                     outbounds.push(vmessOutbound);
+                    if (!defaultRouteOutboundTag && vmessOutbound.tag) {
+                         defaultRouteOutboundTag = vmessOutbound.tag;
+                    }
                 }
             });
 
@@ -274,8 +323,8 @@
                 return;
             }
 
-            if (!defaultVlessTag && outbounds.length > 0) {
-                defaultVlessTag = outbounds[0].tag;
+            if (!defaultRouteOutboundTag && outbounds.length > 0) {
+                defaultRouteOutboundTag = outbounds[0].tag;
             }
 
             const config = {
@@ -292,13 +341,34 @@
                 route: {
                     rules: [{
                         inbound: ["http-in"],
-                        outbound: defaultVlessTag
+                        outbound: defaultRouteOutboundTag
                     }]
                 }
             };
 
             outputConfig.value = JSON.stringify(config, null, 2);
+            saveButton.disabled = false; // Enable save button after successful conversion
         }
+
+        // --- 新增的保存函数 ---
+        function saveConfig() {
+            const configContent = document.getElementById('outputConfig').value;
+            if (configContent) {
+                const blob = new Blob([configContent], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'config.json'; // Set the download file name
+                document.body.appendChild(a); // Append to body is good practice for Firefox
+                a.click(); // Programmatically click the link to trigger download
+                document.body.removeChild(a); // Clean up the element
+                URL.revokeObjectURL(url); // Clean up the URL object
+            } else {
+                document.getElementById('errorMessage').textContent = '没有内容可供保存，请先转换节点。';
+            }
+        }
+        // --- 新增的保存函数结束 ---
     </script>
 </body>
 </html>
