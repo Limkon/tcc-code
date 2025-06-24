@@ -552,32 +552,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
     ZeroMemory(&pi, sizeof(pi)); // Initialize PROCESS_INFORMATION structure
 
-    // Attempt to parse tags with retries
-    int retry_count = 0;
-    const int MAX_RETRIES = 3;
-    const int RETRY_DELAY_MS = 10000; // 10 seconds
-
-    while (retry_count < MAX_RETRIES) {
-        if (ParseTags()) {
-            break; // Success, exit loop
-        }
-        retry_count++;
-        if (retry_count < MAX_RETRIES) {
-            Sleep(RETRY_DELAY_MS); // Wait before retrying
-        }
-    }
-
-    if (retry_count == MAX_RETRIES && !ParseTags()) { // Final check after retries
+    // Attempt to parse tags - no retries
+    if (!ParseTags()) {
         MessageBoxW(NULL, L"无法读取 config.json 文件，请确保其存在且格式正确。程序将退出。", L"错误", MB_OK | MB_ICONERROR);
         if (hMutex) CloseHandle(hMutex);
-        return 1; // Exit if config cannot be parsed after retries
+        return 1; // Exit if config cannot be parsed
     }
 
     // Register window class
     const wchar_t *CLASS_NAME = L"TrayWindowClass";
     WNDCLASSW wc = {0};
-    wc.lpfnWndProc = WndProc;         // Our window procedure
-    wc.hInstance = hInstance;         // Current instance handle
+    wc.lpfnWndProc = WndProc;       // Our window procedure
+    wc.hInstance = hInstance;       // Current instance handle
     wc.lpszClassName = CLASS_NAME;    // Class name
     // Load icon from resources (assuming ID 1 for your icon in the .rc file)
     wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCE(1));
