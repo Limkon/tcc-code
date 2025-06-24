@@ -3,13 +3,16 @@
 
 #define _WIN32_WINNT 0x0501 // For Windows XP compatibility
 
-#include <windows.h> 
-#include <stdio.h>   // For FILE operations, sscanf, fprintf, fflush, _fileno
-#include <stdlib.h>  // For malloc, free
-#include <string.h>  // For strlen, strcpy, strstr, strchr, strncpy
-#include <wchar.h>   // For wide character string operations, wcscmp, wcsstr etc.
-#include <time.h>    // For time-related functions
-#include <io.h>      // For _commit
+#include <windows.h>    
+#include <stdio.h>      // For FILE operations (for config.ini), sscanf, fprintf
+#include <stdlib.h>     // For malloc, free
+#include <string.h>     // For strlen, strcpy, strstr, strchr, strncpy
+#include <wchar.h>      // For wide character string operations, wcscmp, wcsstr etc.
+#include <time.h>       // For time-related functions
+#include <io.h>         // For _commit (for INI file flush)
+
+// For Resource Hacker icon embedding
+#define IDI_APPICON 101 // You would typically define this in a resource.h and include it
 
 // --- Constants and Global Variables ---
 // Window Class Names
@@ -17,16 +20,12 @@ const WCHAR *MAIN_WINDOW_CLASS = L"ShutdownAssistantMainWindowClass";
 const WCHAR *HIDDEN_WINDOW_CLASS = L"ShutdownAssistantHiddenWindowClass";
 const WCHAR *MUTEX_NAME = L"Global\\ShutdownAssistantMutex"; // Global mutex name
 
-// Custom message for activating GUI of existing instance
-#define WM_SHOW_MAIN_GUI (WM_USER + 100) 
-
 // Config file name
-const WCHAR *CONFIG_FILE_BASE_NAME = L"config.ini"; 
-
+const WCHAR *CONFIG_FILE_BASE_NAME = L"config.ini";
 const WCHAR *CONFIG_SECTION_NAME = L"Settings"; // Section name in INI file
 
 // Paths for config file (global, will store FULL ABSOLUTE path)
-WCHAR g_config_file_path[MAX_PATH]; 
+WCHAR g_config_file_path[MAX_PATH];
 
 // Timer IDs
 #define IDT_TIMER_CHECK_IDLE 2001
@@ -41,20 +40,19 @@ WCHAR g_config_file_path[MAX_PATH];
 #define IDC_CHK_IDLE_SHUTDOWN       104
 #define IDC_EDIT_IDLE_MINUTES       105
 #define IDC_EDIT_COUNTDOWN_SECONDS  106
-#define IDC_CHK_SHOW_WARNING        107
+// IDC_CHK_SHOW_WARNING (removed)
 #define IDC_CHK_HIDE_MAIN_WINDOW    108 // Hide main window on next launch
 #define IDC_BTN_SAVE_SETTINGS       109
 #define IDC_BTN_SHUTDOWN_NOW        110
-#define IDC_BTN_EXIT_APP            112 // New: Exit application button
+#define IDC_BTN_EXIT_APP            112 // Exit application button
+#define IDC_BTN_HIDE_PROGRAM        113 // New: Hide main window button (current launch)
+
 
 // Global variables
 HWND g_hMainWindow = NULL; // Main GUI window handle
 HWND g_hHiddenWindow = NULL; // Hidden window handle for timers
 HANDLE g_hMutex = NULL; // Global mutex handle for single instance
-BOOL g_shutdown_executed_today = FALSE; 
-
-// Handle for the opened config file, for locking purposes
-HANDLE g_hConfigFileLock = INVALID_HANDLE_VALUE;
+BOOL g_shutdown_executed_today = FALSE;
 
 // --- Configuration Structure ---
 typedef struct {
@@ -65,7 +63,7 @@ typedef struct {
     BOOL enable_idle_shutdown;  // Whether to enable idle shutdown
     int idle_minutes;           // Minutes of inactivity before shutdown
     int countdown_seconds;      // Seconds to countdown before executing shutdown command
-    BOOL show_shutdown_warning; // Whether to show shutdown warning message boxes
+    // BOOL show_shutdown_warning; // Removed
     BOOL hide_main_window;      // Whether to hide main window on next launch
 } AppConfig;
 
@@ -75,9 +73,6 @@ AppConfig g_config; // Global configuration instance
 // Window Procedures
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-// Utility Functions
-// Removed LogMessage - now inline fatal error messages are used only where critical.
 
 // Helper to read boolean from INI file
 BOOL GetPrivateProfileBoolW(LPCWSTR lpAppName, LPCWSTR lpKeyName, BOOL fDefault, LPCWSTR lpFileName);
@@ -97,8 +92,6 @@ void InitiateShutdown(UINT countdown);
 void StopShutdownCountdown();
 void SetShutdownTimers();
 
-
-// --- Removed LogMessage function entirely ---
 
 // Helper to read boolean from INI file
 BOOL GetPrivateProfileBoolW(LPCWSTR lpAppName, LPCWSTR lpKeyName, BOOL fDefault, LPCWSTR lpFileName) {
@@ -122,17 +115,15 @@ BOOL WritePrivateProfileIntW(LPCWSTR lpAppName, LPCWSTR lpKeyName, int iValue, L
 
 // --- Configuration Read/Write Functions ---
 BOOL LoadConfig(const WCHAR* configPath) {
-    // No LogMessage here.
-
     // Initialize with default values. These will be overwritten by successful reads.
-    g_config.enable_autorun = FALSE; 
+    g_config.enable_autorun = FALSE;
     g_config.enable_timed_shutdown = FALSE;
     g_config.shutdown_hour = 0;
     g_config.shutdown_minute = 0;
     g_config.enable_idle_shutdown = FALSE;
     g_config.idle_minutes = 0;
     g_config.countdown_seconds = 0;
-    g_config.show_shutdown_warning = FALSE; // Default: do NOT show warnings
+    // g_config.show_shutdown_warning = FALSE; // Removed
     g_config.hide_main_window = FALSE;    // Default: show GUI
 
     // Check if config file exists using FindFirstFileW
@@ -143,7 +134,7 @@ BOOL LoadConfig(const WCHAR* configPath) {
         FindClose(hFind); // Close handle (even if invalid)
         
         // --- MANUALLY CREATE AND WRITE DEFAULT CONFIG USING _wfopen ---
-        FILE* f_create = _wfopen(configPath, L"w,ccs=UTF-16LE"); 
+        FILE* f_create = _wfopen(configPath, L"w,ccs=UTF-16LE");
         if (!f_create) { // If _wfopen fails, it's a critical error for file creation
              MessageBoxW(NULL, L"致命错误：无法创建配置文件！请检查程序权限。\n尝试将程序放在桌面或“文档”等有写入权限的目录。\n错误码: %lu", L"配置文件创建失败", MB_OK | MB_ICONERROR);
              return FALSE; // Return FALSE if creation failed
@@ -158,11 +149,10 @@ BOOL LoadConfig(const WCHAR* configPath) {
         fwprintf(f_create, L"EnableIdleShutdown=%ls\n", g_config.enable_idle_shutdown ? L"true" : L"false");
         fwprintf(f_create, L"IdleMinutes=%d\n", g_config.idle_minutes);
         fwprintf(f_create, L"CountdownSeconds=%d\n", g_config.countdown_seconds);
-        fwprintf(f_create, L"ShowShutdownWarning=%ls\n", g_config.show_shutdown_warning ? L"true" : L"false");
+        // fwprintf(f_create, L"ShowShutdownWarning=%ls\n", g_config.show_shutdown_warning ? L"true" : L"false"); // Removed
         fwprintf(f_create, L"HideMainWindow=%ls\n", g_config.hide_main_window ? L"true" : L"false");
         
         fclose(f_create);
-        // No LogMessage here.
     } else {
         // config.ini found.
     }
@@ -176,15 +166,13 @@ BOOL LoadConfig(const WCHAR* configPath) {
     g_config.enable_idle_shutdown = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableIdleShutdown", g_config.enable_idle_shutdown, configPath);
     g_config.idle_minutes = GetPrivateProfileIntW(CONFIG_SECTION_NAME, L"IdleMinutes", g_config.idle_minutes, configPath);
     g_config.countdown_seconds = GetPrivateProfileIntW(CONFIG_SECTION_NAME, L"CountdownSeconds", g_config.countdown_seconds, configPath);
-    g_config.show_shutdown_warning = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath);
+    // g_config.show_shutdown_warning = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath); // Removed
     g_config.hide_main_window = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"HideMainWindow", g_config.hide_main_window, configPath);
 
-    // No LogMessage here.
     return TRUE;
 }
 
 BOOL SaveConfig(const WCHAR* configPath) {
-    // No LogMessage here.
     
     // Write values to INI file
     WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableAutorun", g_config.enable_autorun, configPath);
@@ -194,16 +182,14 @@ BOOL SaveConfig(const WCHAR* configPath) {
     WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableIdleShutdown", g_config.enable_idle_shutdown, configPath);
     WritePrivateProfileIntW(CONFIG_SECTION_NAME, L"IdleMinutes", g_config.idle_minutes, configPath);
     WritePrivateProfileIntW(CONFIG_SECTION_NAME, L"CountdownSeconds", g_config.countdown_seconds, configPath);
-    WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath);
+    // WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath); // Removed
     WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"HideMainWindow", g_config.hide_main_window, configPath);
 
     // Force INI file writes to disk immediately
-    if (WritePrivateProfileStringW(NULL, NULL, NULL, configPath) == 0) { 
-        // No MessageBoxW here for saving error, as user wants silent.
-        return FALSE; 
+    if (WritePrivateProfileStringW(NULL, NULL, NULL, configPath) == 0) {
+        return FALSE;
     }
 
-    // No LogMessage here.
     return TRUE;
 }
 
@@ -240,7 +226,6 @@ void SetAutorun(BOOL enable) {
         }
         RegCloseKey(hKey);
     } else {
-        // No LogMessage here.
     }
 }
 
@@ -260,9 +245,9 @@ void SetShutdownTimers() {
 
     if (g_config.enable_idle_shutdown) {
         if (g_config.idle_minutes <= 0) {
-            g_config.enable_idle_shutdown = FALSE; 
+            g_config.enable_idle_shutdown = FALSE;
         } else {
-            SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_IDLE, g_config.idle_minutes * 60 * 1000, NULL); 
+            SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_IDLE, g_config.idle_minutes * 60 * 1000, NULL);
         }
     } else {
     }
@@ -270,9 +255,9 @@ void SetShutdownTimers() {
     if (g_config.enable_timed_shutdown) {
         if (g_config.shutdown_hour < 0 || g_config.shutdown_hour > 23 ||
             g_config.shutdown_minute < 0 || g_config.shutdown_minute > 59) {
-            g_config.enable_timed_shutdown = FALSE; 
+            g_config.enable_timed_shutdown = FALSE;
         } else {
-            SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_TIMED_SHUTDOWN, 60 * 1000, NULL); 
+            SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_TIMED_SHUTDOWN, 60 * 1000, NULL);
         }
     } else {
     }
@@ -280,7 +265,7 @@ void SetShutdownTimers() {
 
 // --- GUI Functions ---
 void ApplyConfigToGUI() {
-    if (!g_hMainWindow) return; 
+    if (!g_hMainWindow) return;
 
     SendMessage(GetDlgItem(g_hMainWindow, IDC_CHK_AUTORUN), BM_SETCHECK, g_config.enable_autorun ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessage(GetDlgItem(g_hMainWindow, IDC_CHK_TIMED_SHUTDOWN), BM_SETCHECK, g_config.enable_timed_shutdown ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -299,8 +284,8 @@ void ApplyConfigToGUI() {
     swprintf_s(szTime, ARRAYSIZE(szTime), L"%d", g_config.countdown_seconds);
     SetDlgItemTextW(g_hMainWindow, IDC_EDIT_COUNTDOWN_SECONDS, szTime);
 
-    InvalidateRect(g_hMainWindow, NULL, TRUE); 
-    UpdateWindow(g_hMainWindow); 
+    InvalidateRect(g_hMainWindow, NULL, TRUE);
+    UpdateWindow(g_hMainWindow);
 }
 
 void GetConfigFromGUI() {
@@ -326,50 +311,55 @@ void GetConfigFromGUI() {
 LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            g_hMainWindow = hWnd; 
-            int yPos = 20; 
-            const int lineSpacing = 30; 
-            const int labelWidth = 140; 
-            const int checkboxOffset = 160; 
-            const int editWidthSmall = 35; 
-            const int editWidthLarge = 60; 
+            g_hMainWindow = hWnd;
+            int yPos = 20;
+            const int lineSpacing = 28; // Tighter spacing
+            const int labelWidth = 120; // Slightly narrower labels
+            const int checkboxColX = 145; // Consistent column for checkboxes/edits
+            const int editWidthSmall = 35;
+            const int editWidthLarge = 60;
             const int buttonWidth = 90;
             const int buttonHeight = 30;
+            const int buttonHorizontalSpacing = 10;
 
 
             CreateWindowW(L"STATIC", L"开机启动:", WS_VISIBLE | WS_CHILD, 20, yPos, labelWidth, 20, hWnd, NULL, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxOffset, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_AUTORUN, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxColX, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_AUTORUN, NULL, NULL);
             yPos += lineSpacing;
 
             CreateWindowW(L"STATIC", L"定时关机:", WS_VISIBLE | WS_CHILD, 20, yPos, labelWidth, 20, hWnd, NULL, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxOffset, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_TIMED_SHUTDOWN, NULL, NULL);
-            CreateWindowW(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER, checkboxOffset + 30, yPos, editWidthSmall, 20, hWnd, (HMENU)IDC_EDIT_SHUTDOWN_HOUR, NULL, NULL);
-            CreateWindowW(L"STATIC", L":", WS_VISIBLE | WS_CHILD, checkboxOffset + 70, yPos, 10, 20, hWnd, NULL, NULL, NULL);
-            CreateWindowW(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER, checkboxOffset + 85, yPos, editWidthSmall, 20, hWnd, (HMENU)IDC_EDIT_SHUTDOWN_MINUTE, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxColX, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_TIMED_SHUTDOWN, NULL, NULL);
+            CreateWindowW(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER, checkboxColX + 30, yPos, editWidthSmall, 20, hWnd, (HMENU)IDC_EDIT_SHUTDOWN_HOUR, NULL, NULL);
+            CreateWindowW(L"STATIC", L":", WS_VISIBLE | WS_CHILD, checkboxColX + 70, yPos, 10, 20, hWnd, NULL, NULL, NULL);
+            CreateWindowW(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER, checkboxColX + 85, yPos, editWidthSmall, 20, hWnd, (HMENU)IDC_EDIT_SHUTDOWN_MINUTE, NULL, NULL);
             yPos += lineSpacing;
 
             CreateWindowW(L"STATIC", L"空闲关机:", WS_VISIBLE | WS_CHILD, 20, yPos, labelWidth, 20, hWnd, NULL, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxOffset, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_IDLE_SHUTDOWN, NULL, NULL);
-            CreateWindowW(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER, checkboxOffset + 30, yPos, editWidthLarge, 20, hWnd, (HMENU)IDC_EDIT_IDLE_MINUTES, NULL, NULL);
-            CreateWindowW(L"STATIC", L"分钟", WS_VISIBLE | WS_CHILD, checkboxOffset + 95, yPos, 40, 20, hWnd, NULL, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxColX, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_IDLE_SHUTDOWN, NULL, NULL);
+            CreateWindowW(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER, checkboxColX + 30, yPos, editWidthLarge, 20, hWnd, (HMENU)IDC_EDIT_IDLE_MINUTES, NULL, NULL);
+            CreateWindowW(L"STATIC", L"分钟", WS_VISIBLE | WS_CHILD, checkboxColX + 95, yPos, 40, 20, hWnd, NULL, NULL, NULL);
             yPos += lineSpacing;
 
             CreateWindowW(L"STATIC", L"关机倒计时:", WS_VISIBLE | WS_CHILD, 20, yPos, labelWidth, 20, hWnd, NULL, NULL, NULL);
-            CreateWindowW(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER, checkboxOffset, yPos, editWidthLarge, 20, hWnd, (HMENU)IDC_EDIT_COUNTDOWN_SECONDS, NULL, NULL);
-            CreateWindowW(L"STATIC", L"秒", WS_VISIBLE | WS_CHILD, checkboxOffset + 65, yPos, 40, 20, hWnd, NULL, NULL, NULL);
+            CreateWindowW(L"EDIT", L"", WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER, checkboxColX, yPos, editWidthLarge, 20, hWnd, (HMENU)IDC_EDIT_COUNTDOWN_SECONDS, NULL, NULL);
+            CreateWindowW(L"STATIC", L"秒", WS_VISIBLE | WS_CHILD, checkboxColX + 65, yPos, 40, 20, hWnd, NULL, NULL, NULL);
             yPos += lineSpacing;
 
-            yPos += lineSpacing; // Adjust for removed "显示警告弹窗:" checkbox line
+            // Removed "显示警告弹窗:" checkbox and "启用日志记录:" checkbox lines
             
-            yPos += lineSpacing; // Adjust for removed "启用日志记录:" checkbox line
+            CreateWindowW(L"STATIC", L"下次启动隐藏界面:", WS_VISIBLE | WS_CHILD, 20, yPos, labelWidth + 30, 20, hWnd, NULL, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxColX + 30, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_HIDE_MAIN_WINDOW, NULL, NULL);
+            yPos += lineSpacing + 15; // Extra spacing before buttons
 
-            CreateWindowW(L"STATIC", L"下次启动隐藏界面:", WS_VISIBLE | WS_CHILD, 20, yPos, labelWidth + 30, 20, hWnd, NULL, NULL, NULL); 
-            CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxOffset + 30, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_HIDE_MAIN_WINDOW, NULL, NULL);
-            yPos += lineSpacing + 10; 
-
-            CreateWindowW(L"BUTTON", L"保存设置", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 20, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_SAVE_SETTINGS, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"立即关机", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 20 + buttonWidth + 10, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_SHUTDOWN_NOW, NULL, NULL);
-            CreateWindowW(L"BUTTON", L"退出程序", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, 20 + buttonWidth + 10 + buttonWidth + 10, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_EXIT_APP, NULL, NULL); 
+            // Buttons layout
+            int btnX = 20;
+            CreateWindowW(L"BUTTON", L"保存设置", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, btnX, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_SAVE_SETTINGS, NULL, NULL);
+            btnX += buttonWidth + buttonHorizontalSpacing;
+            CreateWindowW(L"BUTTON", L"立即关机", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, btnX, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_SHUTDOWN_NOW, NULL, NULL);
+            btnX += buttonWidth + buttonHorizontalSpacing;
+            CreateWindowW(L"BUTTON", L"隐藏程序", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, btnX, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_HIDE_PROGRAM, NULL, NULL); // New Hide button
+            btnX += buttonWidth + buttonHorizontalSpacing;
+            CreateWindowW(L"BUTTON", L"退出程序", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON, btnX, yPos, buttonWidth, buttonHeight, hWnd, (HMENU)IDC_BTN_EXIT_APP, NULL, NULL);
 
             break;
         }
@@ -378,27 +368,35 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             int wmId = LOWORD(wParam);
             switch (wmId) {
                 case IDC_BTN_SAVE_SETTINGS:
-                    GetConfigFromGUI(); 
-                    SaveConfig(g_config_file_path); 
-                    SetAutorun(g_config.enable_autorun); 
-                    SetShutdownTimers(); 
+                    GetConfigFromGUI();
+                    SaveConfig(g_config_file_path);
+                    SetAutorun(g_config.enable_autorun);
+                    SetShutdownTimers();
                     MessageBoxW(hWnd, L"设置已保存并应用！", L"提示", MB_OK | MB_ICONINFORMATION);
                     break;
                 case IDC_BTN_SHUTDOWN_NOW:
-                    InitiateShutdown(g_config.countdown_seconds); 
+                    // Stop any existing countdown before initiating a new one
+                    StopShutdownCountdown(); 
+                    InitiateShutdown(g_config.countdown_seconds);
                     break;
-                case IDC_BTN_EXIT_APP: 
-                    DestroyWindow(g_hHiddenWindow); 
+                case IDC_BTN_HIDE_PROGRAM: // Handle new hide button
+                    ShowWindow(hWnd, SW_HIDE);
+                    break;
+                case IDC_BTN_EXIT_APP:
+                    // Destroy the hidden window, which will post WM_QUIT
+                    DestroyWindow(g_hHiddenWindow);
                     break;
             }
             break;
         }
 
         case WM_CLOSE:
+            // When user clicks 'X' button, hide the window instead of destroying it
             ShowWindow(hWnd, SW_HIDE);
             break;
 
         case WM_DESTROY:
+            // This message is handled by PostQuitMessage in HiddenWindowProc when DestroyWindow is called
             break;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -408,18 +406,20 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE:
-            g_hHiddenWindow = hWnd; 
+            g_hHiddenWindow = hWnd;
             break;
 
         case WM_TIMER:
             if (LOWORD(wParam) == IDT_TIMER_CHECK_IDLE) {
+                // To trigger idle shutdown only once, kill this timer
+                KillTimer(hWnd, IDT_TIMER_CHECK_IDLE); 
                 InitiateShutdown(g_config.countdown_seconds);
-                KillTimer(hWnd, IDT_TIMER_CHECK_IDLE);
 
             } else if (LOWORD(wParam) == IDT_TIMER_CHECK_TIMED_SHUTDOWN) {
                 SYSTEMTIME st;
                 GetLocalTime(&st);
 
+                // Reset shutdown_executed_today at midnight
                 if (st.wHour == 0 && st.wMinute == 0 && g_shutdown_executed_today) {
                     g_shutdown_executed_today = FALSE;
                 }
@@ -435,35 +435,39 @@ LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
                     }
                 }
             } else if (LOWORD(wParam) == IDT_TIMER_SHUTDOWN_COUNTDOWN) {
-                KillTimer(hWnd, IDT_TIMER_SHUTDOWN_COUNTDOWN);
+                KillTimer(hWnd, IDT_TIMER_SHUTDOWN_COUNTDOWN); // Stop countdown timer
 
                 STARTUPINFOW si = { sizeof(si) };
                 PROCESS_INFORMATION pi = {0};
                 si.dwFlags = STARTF_USESHOWWINDOW;
-                si.wShowWindow = SW_HIDE;
+                si.wShowWindow = SW_HIDE; // Hide the command prompt window
 
-                WCHAR cmdLine[] = L"shutdown.exe -s -t 0";
+                WCHAR cmdLine[] = L"shutdown.exe -s -t 0"; // Shutdown command
                 
-                if (CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE, 
-                                   CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                if (CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE,
+                                    CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
                     CloseHandle(pi.hProcess);
                     CloseHandle(pi.hThread);
                 } else {
-                    // This is where CreateProcessW failed. Re-introduce MessageBox for this critical error.
-                    MessageBoxW(NULL, L"致命错误：无法执行关机命令！请确保 shutdown.exe 在系统路径中且程序有足够权限。", L"关机失败", MB_OK | MB_ICONERROR);
+                    // Critical error: Failed to execute shutdown.exe
+                    // In a production app, you might log this or show a critical message
                 }
-                PostQuitMessage(0); // Exit the application
+                PostQuitMessage(0); // Exit the application after initiating shutdown
             }
             break;
 
         case WM_ENDSESSION:
-            if (wParam == TRUE) { 
-                KillTimer(hWnd, IDT_TIMER_CHECK_IDLE); KillTimer(hWnd, IDT_TIMER_CHECK_TIMED_SHUTDOWN); KillTimer(hWnd, IDT_TIMER_SHUTDOWN_COUNTDOWN); 
+            // Handle system shutdown/logoff by cleaning up timers
+            if (wParam == TRUE) {
+                KillTimer(hWnd, IDT_TIMER_CHECK_IDLE);
+                KillTimer(hWnd, IDT_TIMER_CHECK_TIMED_SHUTDOWN);
+                KillTimer(hWnd, IDT_TIMER_SHUTDOWN_COUNTDOWN);
             }
-            return 0;
-        case WM_QUERYENDSESSION: return TRUE;
+            return 0; // Return 0 to allow session to end
+        case WM_QUERYENDSESSION:
+            return TRUE; // Allow system to shutdown/logoff
         case WM_DESTROY:
-            PostQuitMessage(0); 
+            PostQuitMessage(0); // Post quit message to end the message loop
             break;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -473,9 +477,9 @@ LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
 // --- Program Entry Point ---
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int nCmdShow) {
     // --- Set Current Working Directory (This remains the executable's directory) ---
-    WCHAR exeDir[MAX_PATH]; 
+    WCHAR exeDir[MAX_PATH];
     GetModuleFileNameW(NULL, exeDir, MAX_PATH);
-    WCHAR* p = wcsrchr(exeDir, L'\\'); 
+    WCHAR* p = wcsrchr(exeDir, L'\\');
     if (p != NULL) {
         *p = L'\0'; // Null-terminate to get only the directory path
         if (!SetCurrentDirectoryW(exeDir)) {
@@ -489,43 +493,37 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
     // --- Determine config file path (now absolute path in program directory) ---
     swprintf_s(g_config_file_path, ARRAYSIZE(g_config_file_path), L"%s\\%s", exeDir, CONFIG_FILE_BASE_NAME);
-    // g_log_file_path is no longer needed as there's no log file.
 
     // --- Initial file write permission test (for config.ini) ---
-    // Try to open config.ini for writing (creates if not exists).
-    // This tests write permission to the program's directory.
-    // NOTE: g_log_file_path is no longer used, directly test config file.
     FILE* testConfigFile = _wfopen(g_config_file_path, L"a"); // "a" mode to append (creates if not exists)
     if (!testConfigFile) {
-        MessageBoxW(NULL, 
-                    L"致命错误：程序所在目录无写入权限！\n\n"
-                    L"请将本程序 (ShutdownTray.exe) 移动到桌面、文档、下载等您拥有完全写入权限的目录，然后再次运行。\n"
-                    L"错误码: %lu", 
-                    L"权限不足，无法启动", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL,
+                     L"致命错误：程序所在目录无写入权限！\n\n"
+                     L"请将本程序 (ShutdownTray.exe) 移动到桌面、文档、下载等您拥有完全写入权限的目录，然后再次运行。\n"
+                     L"错误码: %lu",
+                     L"权限不足，无法启动", MB_OK | MB_ICONERROR);
         return 1;
     }
     fclose(testConfigFile); // Close the test file immediately
-    // Optional: Delete the test file if it was just created (not strictly necessary as it's tiny)
-    // _wunlink(g_config_file_path); 
 
     // --- Mutex to ensure single instance ---
-    g_hMutex = CreateMutexW(NULL, TRUE, MUTEX_NAME); 
+    g_hMutex = CreateMutexW(NULL, TRUE, MUTEX_NAME);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND existing_hwnd = FindWindowW(MAIN_WINDOW_CLASS, NULL); 
+        HWND existing_hwnd = FindWindowW(MAIN_WINDOW_CLASS, NULL);
         if (existing_hwnd) {
-            ShowWindow(existing_hwnd, SW_RESTORE); 
-            SetWindowPos(existing_hwnd, HWND_TOPMOST, 0,0,0,0, SWP_NOMOVE | SWP_NOSIZE); 
-            SetWindowPos(existing_hwnd, HWND_NOTOPMOST, 0,0,0,0, SWP_NOMOVE | SWP_NOSIZE); 
-            SetForegroundWindow(existing_hwnd); 
+            ShowWindow(existing_hwnd, SW_RESTORE);
+            SetWindowPos(existing_hwnd, HWND_TOPMOST, 0,0,0,0, SWP_NOMOVE | SWP_NOSIZE);
+            SetWindowPos(existing_hwnd, HWND_NOTOPMOST, 0,0,0,0, SWP_NOMOVE | SWP_NOSIZE);
+            SetForegroundWindow(existing_hwnd);
         } else {
             // No message for duplicate instance if main window is not found.
         }
         if (g_hMutex) CloseHandle(g_hMutex);
-        return 0; 
+        return 0;
     }
     
     // --- Load Configuration (will generate if not found) ---
-    if (!LoadConfig(g_config_file_path)) { 
+    if (!LoadConfig(g_config_file_path)) {
         // Fatal error message box already shown in LoadConfig
         if (g_hMutex) CloseHandle(g_hMutex);
         return 1;
@@ -551,7 +549,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     wc.lpfnWndProc = MainWindowProc; // Main window procedure
     wc.hInstance = hInstance;
     wc.lpszClassName = MAIN_WINDOW_CLASS;
-    wc.hIcon = LoadIconW(NULL, IDI_APPLICATION); // Default icon for main window
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCE(IDI_APPICON)); // Load icon from resources (for Resource Hacker)
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); // A standard gray background
     if (!RegisterClassW(&wc)) {
         MessageBoxW(NULL, L"致命错误：无法注册主窗口类！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
@@ -586,7 +584,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     g_hMainWindow = CreateWindowExW(
         0, MAIN_WINDOW_CLASS, L"定时空闲关机助手",
         WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, // Standard window styles
-        CW_USEDEFAULT, CW_USEDEFAULT, 480, 370, // Adjusted Width for better layout (more space for exit button)
+        CW_USEDEFAULT, CW_USEDEFAULT, 430, 250, // Adjusted Width and Height for better, more compact layout
         NULL, NULL, hInstance, NULL);
 
     if (!g_hMainWindow) {
