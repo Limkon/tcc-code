@@ -137,6 +137,7 @@
             try {
                 const protocol = url.split('://')[0].toLowerCase();
                 if (protocol === 'vmess') {
+                    // Extract Base64 string after 'vmess://'
                     const base64Str = url.replace('vmess://', '').trim();
                     const decoded = base64Decode(base64Str);
                     if (!decoded) {
@@ -151,36 +152,45 @@
                         net: vmessObj.net,
                         path: vmessObj.path,
                         tls: vmessObj.tls,
-                        host: vmessObj.host,
-                        ps: vmessObj.ps,
+                        host: vmessObj.host, // This is the 'host' for HTTP/WS headers
+                        ps: vmessObj.ps, // 'ps' is the name/tag of the node
                         sni: vmessObj.sni,
                         scy: vmessObj.scy
                     };
                 } else if (protocol === 'trojan' || protocol === 'vless') {
-                    // Split the URL manually to get userinfo, host, port, and query params
-                    const parts = url.split('://')[1].split('#');
-                    const corePart = parts[0]; // "password@host:port?params" or "uuid@host:port?params"
-                    const hashPart = parts.length > 1 ? decodeURIComponent(parts[1]) : ''; // "#tag"
+                    // Split the URL into parts: auth@host:port/path?query#hash
+                    const protocolRemoved = url.substring(url.indexOf('://') + 3);
+                    const hashSplit = protocolRemoved.split('#');
+                    const corePart = hashSplit[0];
+                    const hashPart = hashSplit.length > 1 ? decodeURIComponent(hashSplit[1]) : '';
 
                     let userInfo = '';
-                    let hostPortQuery = corePart;
+                    let hostPortPathQuery = corePart;
 
                     // Check if userinfo exists (contains '@')
                     if (corePart.includes('@')) {
                         const userInfoSplit = corePart.split('@');
                         userInfo = userInfoSplit[0];
-                        hostPortQuery = userInfoSplit[1];
+                        hostPortPathQuery = userInfoSplit[1];
                     }
 
+                    // Separate path and query from host:port
                     let host = '';
                     let port = '';
+                    let path = '';
                     let queryString = '';
 
-                    // Split host:port?params
-                    const querySplit = hostPortQuery.split('?');
-                    const hostPort = querySplit[0];
-                    if (querySplit.length > 1) {
-                        queryString = querySplit[1];
+                    const pathQuerySplit = hostPortPathQuery.split('/');
+                    const hostPort = pathQuerySplit[0]; // e.g., "www.visa.com.sg:8443" or "172.67.192.186:2053"
+                    if (pathQuerySplit.length > 1) {
+                        const remaining = pathQuerySplit.slice(1).join('/'); // Rejoin the rest as path/query
+                        const qIndex = remaining.indexOf('?');
+                        if (qIndex !== -1) {
+                            path = remaining.substring(0, qIndex);
+                            queryString = remaining.substring(qIndex + 1);
+                        } else {
+                            path = remaining;
+                        }
                     }
 
                     const hostPortSplit = hostPort.split(':');
@@ -205,10 +215,11 @@
 
                     return {
                         type: protocol,
-                        userInfo: userInfo,
-                        server: host,
+                        userInfo: userInfo, // Password for Trojan, UUID for VLESS
+                        server: host, // This is the host/IP (e.g., www.visa.com.sg or 172.67.192.186)
                         port: finalPort,
-                        params: queryParams,
+                        path: path ? decodeURIComponent(path) : '', // The extracted path
+                        params: queryParams, // All query parameters
                         tag: hashPart || host // Use hash as tag, fallback to host
                     };
                 }
@@ -231,7 +242,7 @@
 
             const nodeUrls = nodeInput.split('\n').map(line => line.trim()).filter(line => line.length > 0);
             const outbounds = [];
-            let defaultRouteOutboundTag = '';
+            let defaultRouteOutboundTag = ''; // To set the default outbound for the route rule
 
             nodeUrls.forEach(url => {
                 const parsed = parseUrl(url);
@@ -241,51 +252,55 @@
                 }
 
                 if (parsed.type === 'trojan') {
-                    const tag = (parsed.tag || parsed.server).replace(/[^a-zA-Z0-9.\-_]/g, '_');
+                    const tag = (parsed.tag || parsed.server).replace(/[^a-zA-Z0-9.\-_]/g, '_'); // Allow . and - in tags
                     outbounds.push({
                         type: "trojan",
                         tag: `${tag}-trojan`,
-                        server: parsed.server,
-                        server_port: parsed.port,
+                        server: parsed.server, // e.g., www.visa.com.sg or 172.67.192.186
+                        server_port: parsed.port, // e.g., 8443 or 2053
                         password: parsed.userInfo,
                         tls: {
                             enabled: parsed.params.security === 'tls',
-                            server_name: parsed.params.sni || parsed.params.host || parsed.server
+                            server_name: parsed.params.sni || parsed.params.host || parsed.server // SNI for TLS handshake
+                            // "fingerprint": parsed.params.fp // If you want to include fingerprint
                         },
                         transport: {
-                            type: parsed.params.type || 'tcp',
-                            path: parsed.params.path ? decodeURIComponent(parsed.params.path) : '',
+                            type: parsed.params.type || 'tcp', // Default to tcp if type is not specified
+                            path: parsed.path, // Use the separately extracted path
                             headers: {
-                                Host: parsed.params.host || parsed.server
+                                Host: parsed.params.host || parsed.server // Host header for WS/HTTP/gRPC
                             }
                         }
                     });
                 } else if (parsed.type === 'vless') {
-                    const tag = (parsed.tag || parsed.server).replace(/[^a-zA-Z0-9.\-_]/g, '_');
+                    const tag = (parsed.tag || parsed.server).replace(/[^a-zA-Z0-9.\-_]/g, '_'); // Allow . and - in tags
                     const currentVlessTag = `${tag}-vless`;
                     outbounds.push({
                         type: "vless",
                         tag: currentVlessTag,
-                        server: parsed.server,
-                        server_port: parsed.port,
+                        server: parsed.server, // e.g., www.visa.com.sg or 172.67.192.186
+                        server_port: parsed.port, // e.g., 8443 or 2053
                         uuid: parsed.userInfo,
                         tls: {
                             enabled: parsed.params.security === 'tls',
                             server_name: parsed.params.sni || parsed.params.host || parsed.server
+                            // "fingerprint": parsed.params.fp // If you want to include fingerprint
                         },
                         transport: {
-                            type: parsed.params.type || 'tcp',
-                            path: parsed.params.path ? decodeURIComponent(parsed.params.path) : '',
+                            type: parsed.params.type || 'tcp', // Default to tcp if type is not specified
+                            path: parsed.path, // Use the separately extracted path
                             headers: {
                                 Host: parsed.params.host || parsed.server
                             }
                         }
                     });
+                    // Set the first VLESS node as the default for routing
                     if (!defaultRouteOutboundTag) {
                         defaultRouteOutboundTag = currentVlessTag;
                     }
                 } else if (parsed.type === 'vmess') {
                     let tag = parsed.ps || parsed.server;
+                    // Clean the tag to be a valid identifier
                     tag = tag.replace(/[^a-zA-Z0-9.\-_]/g, '_');
 
                     const vmessOutbound = {
@@ -296,10 +311,10 @@
                         uuid: parsed.uuid,
                         security: parsed.scy || "auto",
                         transport: {
-                            type: parsed.net || 'tcp',
+                            type: parsed.net || 'tcp', // Default to tcp if net is not specified
                             path: parsed.path || '',
                             headers: {
-                                Host: parsed.host || ''
+                                Host: parsed.host || '' // Use parsed.host for VMess HTTP/WS host header
                             }
                         }
                     };
@@ -307,11 +322,12 @@
                     if (parsed.tls === 'tls') {
                         vmessOutbound.tls = {
                             enabled: true,
-                            server_name: parsed.sni || parsed.host || parsed.server
+                            server_name: parsed.sni || parsed.host || parsed.server // SNI for VMess TLS
                         };
                     }
 
                     outbounds.push(vmessOutbound);
+                     // Set the first VMess node as the default for routing if no VLESS was found yet
                     if (!defaultRouteOutboundTag && vmessOutbound.tag) {
                          defaultRouteOutboundTag = vmessOutbound.tag;
                     }
@@ -323,8 +339,11 @@
                 return;
             }
 
+            // Fallback: If no VLESS or VMess node was set as default, use the first available outbound
             if (!defaultRouteOutboundTag && outbounds.length > 0) {
                 defaultRouteOutboundTag = outbounds[0].tag;
+            } else if (outbounds.length === 0) { // If there are no outbounds at all, ensure defaultTag is empty
+                defaultRouteOutboundTag = '';
             }
 
             const config = {
