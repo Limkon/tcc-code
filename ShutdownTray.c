@@ -3,13 +3,13 @@
 
 #define _WIN32_WINNT 0x0501 // For Windows XP compatibility
 
-#include <windows.h>      
-#include <stdio.h>        // For FILE operations (for config.ini), sscanf, fprintf
-#include <stdlib.h>       // For malloc, free
-#include <string.h>       // For strlen, strcpy, strstr, strchr, strncpy
-#include <wchar.h>        // For wide character string operations, wcscmp, wcsstr etc.
-#include <time.h>         // For time-related functions
-#include <io.h>           // For _commit (for INI file flush)
+#include <windows.h>       
+#include <stdio.h>         // For FILE operations (for config.ini), sscanf, fprintf
+#include <stdlib.h>        // For malloc, free
+#include <string.h>        // For strlen, strcpy, strstr, strchr, strncpy
+#include <wchar.h>         // For wide character string operations, wcscmp, wcsstr etc.
+#include <time.h>          // For time-related functions
+#include <io.h>            // For _commit (for INI file flush)
 
 // For Resource Hacker icon embedding
 #define IDI_APPICON 101 // 您通常会将其定义在 resource.h 中并包含它
@@ -22,7 +22,6 @@ const WCHAR *MUTEX_NAME = L"Global\\ShutdownAssistantMutex"; // 全局互斥锁�
 
 // 配置文件名
 const WCHAR *CONFIG_FILE_BASE_NAME = L"config.ini";
-// 修复：将 WWCHAR 更正为 WCHAR
 const WCHAR *CONFIG_SECTION_NAME = L"Settings"; // INI 文件中的节名称
 
 // 配置文件路径（全局，将存储完整绝对路径）
@@ -41,7 +40,6 @@ WCHAR g_config_file_path[MAX_PATH];
 #define IDC_CHK_IDLE_SHUTDOWN       104
 #define IDC_EDIT_IDLE_MINUTES       105
 #define IDC_EDIT_COUNTDOWN_SECONDS  106
-// IDC_CHK_SHOW_WARNING (已移除)
 #define IDC_CHK_HIDE_MAIN_WINDOW    108 // 下次启动时隐藏主窗口
 #define IDC_BTN_SAVE_SETTINGS       109
 #define IDC_BTN_SHUTDOWN_NOW        110
@@ -56,6 +54,12 @@ HANDLE g_hMutex = NULL; // 用于单实例运行的全局互斥锁句柄
 BOOL g_shutdown_executed_today = FALSE; // 标记今天是否已执行过定时关机
 BOOL g_is_shutdown_pending = FALSE; // 标记是否已启动关机倒计时
 
+// GetLastInputInfo 函数指针类型定义
+typedef BOOL (WINAPI *PFN_GetLastInputInfo)(LPLASTINPUTINFO);
+PFN_GetLastInputInfo pfnGetLastInputInfo = NULL; // 用于存储 GetLastInputInfo 的函数地址
+HMODULE hUser32 = NULL; // 用于存储 User32.dll 模块的句柄
+
+
 // --- 配置结构体 ---
 typedef struct {
     BOOL enable_autorun;        // 是否随 Windows 自动启动
@@ -65,7 +69,6 @@ typedef struct {
     BOOL enable_idle_shutdown;  // 是否启用空闲关机
     int idle_minutes;           // 空闲多久（分钟）后关机
     int countdown_seconds;      // 执行关机命令前的倒计时秒数
-    // BOOL show_shutdown_warning; // 已移除
     BOOL hide_main_window;      // 下次启动时是否隐藏主窗口
 } AppConfig;
 
@@ -93,25 +96,54 @@ void SetAutorun(BOOL enable);
 void InitiateShutdown(UINT countdown);
 void StopShutdownCountdown();
 void SetShutdownTimers();
+DWORD GetIdleTime(); // 保持不变，内部实现将使用函数指针
+
+// 新增函数原型 (用于动态加载 GetLastInputInfo)
+void InitializeGetLastInputInfo();
+void CleanupGetLastInputInfo();
 
 
-// 辅助函数：从 INI 文件读取布尔值
+// --- 辅助函数 ---
 BOOL GetPrivateProfileBoolW(LPCWSTR lpAppName, LPCWSTR lpKeyName, BOOL fDefault, LPCWSTR lpFileName) {
     WCHAR szRet[8]; // "true" 或 "false" + null 终止符
     GetPrivateProfileStringW(lpAppName, lpKeyName, fDefault ? L"true" : L"false", szRet, ARRAYSIZE(szRet), lpFileName);
     return (wcscmp(szRet, L"true") == 0);
 }
 
-// 辅助函数：向 INI 文件写入布尔值
 BOOL WritePrivateProfileBoolW(LPCWSTR lpAppName, LPCWSTR lpKeyName, BOOL fValue, LPCWSTR lpFileName) {
     return WritePrivateProfileStringW(lpAppName, lpKeyName, fValue ? L"true" : L"false", lpFileName);
 }
 
-// 辅助函数：向 INI 文件写入整数值 (使用 WritePrivateProfileStringW)
 BOOL WritePrivateProfileIntW(LPCWSTR lpAppName, LPCWSTR lpKeyName, int iValue, LPCWSTR lpFileName) {
     WCHAR szValue[16];
     swprintf_s(szValue, ARRAYSIZE(szValue), L"%d", iValue);
     return WritePrivateProfileStringW(lpAppName, lpKeyName, szValue, lpFileName);
+}
+
+// 动态加载 GetLastInputInfo 函数
+void InitializeGetLastInputInfo() {
+    hUser32 = LoadLibraryW(L"User32.dll");
+    if (hUser32) {
+        pfnGetLastInputInfo = (PFN_GetLastInputInfo)GetProcAddress(hUser32, "GetLastInputInfo");
+        if (!pfnGetLastInputInfo) {
+            FreeLibrary(hUser32);
+            hUser32 = NULL;
+            // 可以选择在这里给用户一个警告，但通常不显示这种底层错误
+            // MessageBoxW(NULL, L"警告：无法加载 GetLastInputInfo 函数。空闲关机可能无法正常工作。", L"加载错误", MB_OK | MB_ICONWARNING);
+        }
+    } else {
+        // 可以选择在这里给用户一个警告
+        // MessageBoxW(NULL, L"警告：无法加载 User32.dll。空闲关机可能无法正常工作。", L"加载错误", MB_OK | MB_ICONWARNING);
+    }
+}
+
+// 释放 User32.dll
+void CleanupGetLastInputInfo() {
+    if (hUser32) {
+        FreeLibrary(hUser32);
+        hUser32 = NULL;
+        pfnGetLastInputInfo = NULL;
+    }
 }
 
 
@@ -124,8 +156,7 @@ BOOL LoadConfig(const WCHAR* configPath) {
     g_config.shutdown_minute = 0;
     g_config.enable_idle_shutdown = FALSE;
     g_config.idle_minutes = 0;
-    g_config.countdown_seconds = 0;
-    // g_config.show_shutdown_warning = FALSE; // 已移除
+    g_config.countdown_seconds = 30; // 默认 30 秒倒计时
     g_config.hide_main_window = FALSE;    // 默认：显示 GUI
 
     // 使用 FindFirstFileW 检查配置文件是否存在
@@ -151,7 +182,6 @@ BOOL LoadConfig(const WCHAR* configPath) {
         fwprintf(f_create, L"EnableIdleShutdown=%ls\n", g_config.enable_idle_shutdown ? L"true" : L"false");
         fwprintf(f_create, L"IdleMinutes=%d\n", g_config.idle_minutes);
         fwprintf(f_create, L"CountdownSeconds=%d\n", g_config.countdown_seconds);
-        // fwprintf(f_create, L"ShowShutdownWarning=%ls\n", g_config.show_shutdown_warning ? L"true" : L"false"); // 已移除
         fwprintf(f_create, L"HideMainWindow=%ls\n", g_config.hide_main_window ? L"true" : L"false");
         
         fclose(f_create);
@@ -168,7 +198,6 @@ BOOL LoadConfig(const WCHAR* configPath) {
     g_config.enable_idle_shutdown = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableIdleShutdown", g_config.enable_idle_shutdown, configPath);
     g_config.idle_minutes = GetPrivateProfileIntW(CONFIG_SECTION_NAME, L"IdleMinutes", g_config.idle_minutes, configPath);
     g_config.countdown_seconds = GetPrivateProfileIntW(CONFIG_SECTION_NAME, L"CountdownSeconds", g_config.countdown_seconds, configPath);
-    // g_config.show_shutdown_warning = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath); // 已移除
     g_config.hide_main_window = GetPrivateProfileBoolW(CONFIG_SECTION_NAME, L"HideMainWindow", g_config.hide_main_window, configPath);
 
     return TRUE;
@@ -184,7 +213,6 @@ BOOL SaveConfig(const WCHAR* configPath) {
     WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"EnableIdleShutdown", g_config.enable_idle_shutdown, configPath);
     WritePrivateProfileIntW(CONFIG_SECTION_NAME, L"IdleMinutes", g_config.idle_minutes, configPath);
     WritePrivateProfileIntW(CONFIG_SECTION_NAME, L"CountdownSeconds", g_config.countdown_seconds, configPath);
-    // WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"ShowShutdownWarning", g_config.show_shutdown_warning, configPath); // 已移除
     WritePrivateProfileBoolW(CONFIG_SECTION_NAME, L"HideMainWindow", g_config.hide_main_window, configPath);
 
     // 强制将 INI 文件写入磁盘
@@ -218,7 +246,7 @@ void SetAutorun(BOOL enable) {
     GetModuleFileNameW(NULL, path, MAX_PATH);
 
     LONG createRes = RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                                      0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
+                                     0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
     if (createRes == ERROR_SUCCESS) {
         if (enable) {
             RegSetValueExW(hKey, L"ShutdownTray", 0, REG_SZ, (BYTE*)path,
@@ -248,7 +276,6 @@ void InitiateShutdown(UINT countdown) {
     // 显示倒计时开始提示
     WCHAR szMessage[256];
     swprintf_s(szMessage, ARRAYSIZE(szMessage), L"系统将在 %d 秒后关机。请保存您的工作。", countdown);
-    // 这里使用 MB_OK 即可，弹窗不应该阻止定时器运行，用户点不点“确定”都无所谓
     MessageBoxW(g_hMainWindow, szMessage, L"关机提示", MB_OK | MB_ICONWARNING); 
 }
 
@@ -259,6 +286,21 @@ void StopShutdownCountdown() {
     // MessageBoxW(g_hMainWindow, L"关机倒计时已取消。", L"提示", MB_OK | MB_ICONINFORMATION);
 }
 
+// 获取系统空闲时间 (使用动态加载的 GetLastInputInfo)
+DWORD GetIdleTime() {
+    // 检查函数指针是否有效
+    if (pfnGetLastInputInfo) {
+        LASTINPUTINFO lii = { sizeof(LASTINPUTINFO) };
+        // 调用动态加载的 GetLastInputInfo 函数
+        if (pfnGetLastInputInfo(&lii)) {
+            return (GetTickCount() - lii.dwTime);
+        }
+    }
+    // 如果函数未加载或调用失败，返回0 (表示没有空闲，或者无法检测)
+    return 0; 
+}
+
+
 // --- 定时器管理函数 ---
 void SetShutdownTimers() {
     // 确保在重新设置定时器时，停止所有旧的定时器，特别是防止重复触发关机
@@ -268,22 +310,21 @@ void SetShutdownTimers() {
 
     if (g_config.enable_idle_shutdown) {
         if (g_config.idle_minutes <= 0) {
-            g_config.enable_idle_shutdown = FALSE;
+            g_config.enable_idle_shutdown = FALSE; // 无效值则禁用空闲关机
         } else {
-            SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_IDLE, g_config.idle_minutes * 60 * 1000, NULL);
+            // 空闲检查定时器设置为每 30 秒检查一次，更频繁地监控空闲状态
+            SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_IDLE, 30 * 1000, NULL); 
         }
-    } else {
     }
 
     if (g_config.enable_timed_shutdown) {
         if (g_config.shutdown_hour < 0 || g_config.shutdown_hour > 23 ||
             g_config.shutdown_minute < 0 || g_config.shutdown_minute > 59) {
-            g_config.enable_timed_shutdown = FALSE;
+            g_config.enable_timed_shutdown = FALSE; // 无效值则禁用定时关机
         } else {
             // 定时器每分钟检查一次定时关机条件
             SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_TIMED_SHUTDOWN, 60 * 1000, NULL);
         }
-    } else {
     }
 }
 
@@ -370,8 +411,6 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             CreateWindowW(L"STATIC", L"秒", WS_VISIBLE | WS_CHILD, checkboxColX + 65, yPos, 40, 20, hWnd, NULL, NULL, NULL);
             yPos += lineSpacing;
 
-            // 移除的 "显示警告弹窗:" 复选框和 "启用日志记录:" 复选框行
-            
             CreateWindowW(L"STATIC", L"下次启动隐藏界面:", WS_VISIBLE | WS_CHILD, 20, yPos, labelWidth + 30, 20, hWnd, NULL, NULL, NULL);
             CreateWindowW(L"BUTTON", L"", WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX, checkboxColX + 30, yPos, 20, 20, hWnd, (HMENU)IDC_CHK_HIDE_MAIN_WINDOW, NULL, NULL);
             yPos += lineSpacing + 15; // 按钮前的额外间距
@@ -403,7 +442,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     GetConfigFromGUI();
                     SaveConfig(g_config_file_path);
                     SetAutorun(g_config.enable_autorun);
-                    SetShutdownTimers();
+                    SetShutdownTimers(); // 重新设置所有定时器
                     MessageBoxW(hWnd, L"设置已保存并应用！", L"提示", MB_OK | MB_ICONINFORMATION);
                     break;
                 case IDC_BTN_SHUTDOWN_NOW:
@@ -444,18 +483,28 @@ LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
             if (LOWORD(wParam) == IDT_TIMER_CHECK_IDLE) {
                 // 如果空闲关机已启用且当前没有待处理的关机倒计时
                 if (g_config.enable_idle_shutdown && !g_is_shutdown_pending) {
-                    // 为了只触发一次空闲关机，杀死这个定时器（直到下次重新满足条件）
-                    KillTimer(hWnd, IDT_TIMER_CHECK_IDLE); 
-                    InitiateShutdown(g_config.countdown_seconds);
-                }
+                    DWORD idle_time_ms = GetIdleTime(); // 获取当前空闲时间（毫秒）
+                    // 将配置的空闲分钟转换为毫秒
+                    DWORD configured_idle_time_ms = (DWORD)g_config.idle_minutes * 60 * 1000;
 
+                    if (idle_time_ms >= configured_idle_time_ms && configured_idle_time_ms > 0) {
+                        // 达到空闲时间，触发关机倒计时
+                        InitiateShutdown(g_config.countdown_seconds);
+                    }
+                    // 即使没有触发关机，定时器也会继续运行，持续监控空闲状态
+                }
             } else if (LOWORD(wParam) == IDT_TIMER_CHECK_TIMED_SHUTDOWN) {
                 SYSTEMTIME st;
                 GetLocalTime(&st);
 
                 // 在午夜重置 shutdown_executed_today 标志
-                if (st.wHour == 0 && st.wMinute == 0 && g_shutdown_executed_today) {
+                // 仅当日期发生变化时才重置
+                static WORD last_day = -1; // 静态变量记录上次检查的日期
+                if (last_day == (WORD)-1) { // 第一次运行或程序启动
+                    last_day = st.wDay;
+                } else if (st.wDay != last_day) { // 日期改变了
                     g_shutdown_executed_today = FALSE;
+                    last_day = st.wDay; // 更新日期
                 }
 
                 // 如果定时关机已启用，今天尚未执行，并且当前没有待处理的关机倒计时
@@ -463,10 +512,10 @@ LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
                     int currentTimeInMinutes = st.wHour * 60 + st.wMinute;
                     int scheduledTimeInMinutes = g_config.shutdown_hour * 60 + g_config.shutdown_minute;
 
+                    // 检查当前时间是否已到达或超过预定关机时间
                     if (currentTimeInMinutes >= scheduledTimeInMinutes) {
                         InitiateShutdown(g_config.countdown_seconds);
                         g_shutdown_executed_today = TRUE; // 标记今天已执行
-                    } else {
                     }
                 }
             } else if (LOWORD(wParam) == IDT_TIMER_SHUTDOWN_COUNTDOWN) {
@@ -584,6 +633,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     // 初始化 g_is_shutdown_pending 标志
     g_is_shutdown_pending = FALSE;
 
+    // --- 在注册窗口类之前调用初始化 GetLastInputInfo 函数 ---
+    InitializeGetLastInputInfo();
+
     // --- 注册窗口类 ---
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = MainWindowProc; // 主窗口过程
@@ -593,6 +645,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1); // 标准灰色背景
     if (!RegisterClassW(&wc)) {
         MessageBoxW(NULL, L"致命错误：无法注册主窗口类！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
+        CleanupGetLastInputInfo(); // 清理动态加载的DLL
         if (g_hMutex) CloseHandle(g_hMutex); return 1;
     }
 
@@ -602,6 +655,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     wc.hbrBackground = NULL; // 隐藏窗口没有背景
     if (!RegisterClassW(&wc)) {
         MessageBoxW(NULL, L"致命错误：无法注册隐藏窗口类！程序将无法接收定时器消息。", L"程序启动失败", MB_OK | MB_ICONERROR);
+        CleanupGetLastInputInfo(); // 清理动态加载的DLL
         if (g_hMutex) CloseHandle(g_hMutex); return 1;
     }
 
@@ -609,6 +663,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     g_hHiddenWindow = CreateWindowExW(0, HIDDEN_WINDOW_CLASS, L"ShutdownAssistantHiddenWindow", 0, 0, 0, 0, 0, NULL, NULL, hInstance, NULL);
     if (!g_hHiddenWindow) {
         MessageBoxW(NULL, L"致命错误：无法创建隐藏窗口！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
+        CleanupGetLastInputInfo(); // 清理动态加载的DLL
         if (g_hMutex) CloseHandle(g_hMutex); return 1;
     }
 
@@ -630,6 +685,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     if (!g_hMainWindow) {
         MessageBoxW(NULL, L"致命错误：无法创建主界面窗口！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
         DestroyWindow(g_hHiddenWindow); // 也清理隐藏窗口
+        CleanupGetLastInputInfo(); // 清理动态加载的DLL
         if (g_hMutex) CloseHandle(g_hMutex); return 1;
     }
     
@@ -650,6 +706,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     }
 
     // --- 退出时清理 ---
+    CleanupGetLastInputInfo(); // 在程序退出前释放 User32.dll
     if (g_hMutex) CloseHandle(g_hMutex);
     UnregisterClassW(MAIN_WINDOW_CLASS, hInstance);
     UnregisterClassW(HIDDEN_WINDOW_CLASS, hInstance);
