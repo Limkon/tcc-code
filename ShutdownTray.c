@@ -96,7 +96,7 @@ void SetAutorun(BOOL enable);
 void InitiateShutdown(UINT countdown);
 void StopShutdownCountdown();
 void SetShutdownTimers();
-DWORD GetIdleTime(); // 保持不变，内部实现将使用函数指针
+DWORD GetIdleTime(); 
 
 // 新增函数原型 (用于动态加载 GetLastInputInfo)
 void InitializeGetLastInputInfo();
@@ -484,7 +484,6 @@ LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
                 // 如果空闲关机已启用且当前没有待处理的关机倒计时
                 if (g_config.enable_idle_shutdown && !g_is_shutdown_pending) {
                     DWORD idle_time_ms = GetIdleTime(); // 获取当前空闲时间（毫秒）
-                    // 将配置的空闲分钟转换为毫秒
                     DWORD configured_idle_time_ms = (DWORD)g_config.idle_minutes * 60 * 1000;
 
                     // 只有当空闲时间达到设定值并且设定的空闲分钟数大于0时才触发
@@ -496,15 +495,17 @@ LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
                 SYSTEMTIME st;
                 GetLocalTime(&st);
 
-                // 在午夜重置 shutdown_executed_today 标志
+                // --- 修复：更鲁棒的 g_shutdown_executed_today 重置逻辑 ---
+                // 使用今天的日期来判断是否需要重置 g_shutdown_executed_today
                 // 仅当日期发生变化时才重置
-                static WORD last_day = -1; // 静态变量记录上次检查的日期
-                if (last_day == (WORD)-1) { // 第一次运行或程序启动
-                    last_day = st.wDay;
-                } else if (st.wDay != last_day) { // 日期改变了
+                static WORD s_last_checked_day = 0; // 初始化为0，确保第一次运行时会进行检查
+
+                // 如果今天是新的一天，重置标志
+                if (s_last_checked_day == 0 || s_last_checked_day != st.wDay) {
                     g_shutdown_executed_today = FALSE;
-                    last_day = st.wDay; // 更新日期
+                    s_last_checked_day = st.wDay; // 更新为今天的日期
                 }
+                // --- 修复结束 ---
 
                 // 如果定时关机已启用，今天尚未执行，并且当前没有待处理的关机倒计时
                 if (g_config.enable_timed_shutdown && !g_shutdown_executed_today && !g_is_shutdown_pending) {
@@ -617,13 +618,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     // --- 加载配置后设置自动运行 ---
     SetAutorun(g_config.enable_autorun);
 
-    // --- 初始化 g_shutdown_executed_today 标志 (修复逻辑) ---
+    // --- 初始化 g_shutdown_executed_today 标志 (修正逻辑) ---
     SYSTEMTIME st_init;
     GetLocalTime(&st_init);
     
-    // 将当前时间转换为分钟数
     int currentTimeInMinutes_init = st_init.wHour * 60 + st_init.wMinute;
-    // 将设定关机时间转换为分钟数
     int scheduledTimeInMinutes_init = g_config.shutdown_hour * 60 + g_config.shutdown_minute;
     
     // 只有在启用定时关机且当前时间在设定关机时间之前时，才将标志设为 FALSE
@@ -633,6 +632,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     } else {
         g_shutdown_executed_today = TRUE;
     }
+    // --- 修正结束 ---
     
     // 初始化 g_is_shutdown_pending 标志
     g_is_shutdown_pending = FALSE;
