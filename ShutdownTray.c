@@ -487,11 +487,10 @@ LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
                     // 将配置的空闲分钟转换为毫秒
                     DWORD configured_idle_time_ms = (DWORD)g_config.idle_minutes * 60 * 1000;
 
-                    if (idle_time_ms >= configured_idle_time_ms && configured_idle_time_ms > 0) {
-                        // 达到空闲时间，触发关机倒计时
+                    // 只有当空闲时间达到设定值并且设定的空闲分钟数大于0时才触发
+                    if (configured_idle_time_ms > 0 && idle_time_ms >= configured_idle_time_ms) {
                         InitiateShutdown(g_config.countdown_seconds);
                     }
-                    // 即使没有触发关机，定时器也会继续运行，持续监控空闲状态
                 }
             } else if (LOWORD(wParam) == IDT_TIMER_CHECK_TIMED_SHUTDOWN) {
                 SYSTEMTIME st;
@@ -618,16 +617,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     // --- 加载配置后设置自动运行 ---
     SetAutorun(g_config.enable_autorun);
 
-    // 初始化 g_shutdown_executed_today 标志
+    // --- 初始化 g_shutdown_executed_today 标志 (修复逻辑) ---
     SYSTEMTIME st_init;
     GetLocalTime(&st_init);
+    
+    // 将当前时间转换为分钟数
     int currentTimeInMinutes_init = st_init.wHour * 60 + st_init.wMinute;
+    // 将设定关机时间转换为分钟数
     int scheduledTimeInMinutes_init = g_config.shutdown_hour * 60 + g_config.shutdown_minute;
     
-    if (g_config.enable_timed_shutdown && currentTimeInMinutes_init >= scheduledTimeInMinutes_init) {
-        g_shutdown_executed_today = TRUE;
-    } else {
+    // 只有在启用定时关机且当前时间在设定关机时间之前时，才将标志设为 FALSE
+    // 否则，认为今天的关机机会已过，或未启用定时关机，将标志设为 TRUE
+    if (g_config.enable_timed_shutdown && currentTimeInMinutes_init < scheduledTimeInMinutes_init) {
         g_shutdown_executed_today = FALSE;
+    } else {
+        g_shutdown_executed_today = TRUE;
     }
     
     // 初始化 g_is_shutdown_pending 标志
