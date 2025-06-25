@@ -247,9 +247,10 @@ DWORD GetIdleTime() {
 
 // --- Timer Management ---
 void SetShutdownTimers() {
+    // 停止所有现有的定时器
     KillTimer(g_hHiddenWindow, IDT_TIMER_CHECK_IDLE);
     KillTimer(g_hHiddenWindow, IDT_TIMER_CHECK_TIMED_SHUTDOWN);
-    StopShutdownCountdown();
+    StopShutdownCountdown(); // 这将 g_is_shutdown_pending 设置为 FALSE，并停止任何正在进行的关机倒计时
 
     if (g_config.enable_idle_shutdown) {
         if (g_config.idle_minutes <= 0) {
@@ -266,7 +267,24 @@ void SetShutdownTimers() {
             g_config.enable_timed_shutdown = FALSE;
             MessageBoxW(NULL, L"定时关机时间无效，已禁用定时关机！", L"错误", MB_OK | MB_ICONERROR);
         } else {
-            // 定时检查的间隔数修改为60秒 (Already 60 * 1000 ms)
+            // 在重新设置定时器之前，重新评估 g_shutdown_executed_today 的状态
+            SYSTEMTIME st_current_for_eval;
+            GetLocalTime(&st_current_for_eval);
+            long current_total_seconds_eval = st_current_for_eval.wHour * 3600 + st_current_for_eval.wMinute * 60 + st_current_for_eval.wSecond;
+            long new_scheduled_total_seconds_eval = g_config.shutdown_hour * 3600 + g_config.shutdown_minute * 60;
+
+            // 如果新的计划关机时间在当前时间之后，则重置 g_shutdown_executed_today
+            // 这确保了即使之前今天的关机时间已经过去，新的未来关机时间也可以被触发。
+            if (new_scheduled_total_seconds_eval > current_total_seconds_eval) {
+                g_shutdown_executed_today = FALSE;
+            } else {
+                // 如果新的计划关机时间在当前时间或之前，则认为今天的关机已“执行”
+                g_shutdown_executed_today = TRUE;
+            }
+            // 确保 s_last_handled_day_for_timed_shutdown 是当前日期，以便日變化時正確重置
+            s_last_handled_day_for_timed_shutdown = st_current_for_eval.wDay;
+
+            // 定时检查的间隔数为60秒
             SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_TIMED_SHUTDOWN, 60 * 1000, NULL);
         }
     }
@@ -377,39 +395,30 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     SaveConfig(g_config_file_path);
                     SetAutorun(g_config.enable_autorun);
 
-                    // --- 保存设置时立即检查定时关机条件 ---
-                    BOOL immediate_shutdown_triggered = FALSE;
-                    if (g_config.enable_timed_shutdown && !g_is_shutdown_pending) {
-                        SYSTEMTIME st_now;
-                        GetLocalTime(&st_now);
+                    // 调用 SetShutdownTimers()，该函数现在包含了重置 g_shutdown_executed_today 和 g_is_shutdown_pending 的逻辑
+                    // 并且会重新设置定时器。
+                    SetShutdownTimers(); 
 
-                        // 检查日期是否改变，如果改变则重置今日关机标志
-                        if (s_last_handled_day_for_timed_shutdown == 0) {
-                            s_last_handled_day_for_timed_shutdown = st_now.wDay;
-                        }
-                        if (st_now.wDay != s_last_handled_day_for_timed_shutdown) {
-                            g_shutdown_executed_today = FALSE;
-                            s_last_handled_day_for_timed_shutdown = st_now.wDay;
-                        }
+                    // 重新检查是否需要立即触发关机 (即使 SetShutdownTimers 已重置了状态)
+                    // 这是为了处理用户在保存时，新的定时关机时间恰好在当前时间的 +/- 60秒内的情况。
+                    // 这种即时检查是必要的，因为 SetShutdownTimers 只是重置了内部状态并重新启动了周期性检查，
+                    // 而周期性检查需要等待下一个60秒的周期。
+                    BOOL immediate_shutdown_triggered_on_save = FALSE;
+                    if (g_config.enable_timed_shutdown && !g_is_shutdown_pending && !g_shutdown_executed_today) {
+                        SYSTEMTIME st_current_on_save_check;
+                        GetLocalTime(&st_current_on_save_check);
+                        long current_total_seconds_on_save = st_current_on_save_check.wHour * 3600 + st_current_on_save_check.wMinute * 60 + st_current_on_save_check.wSecond;
+                        long scheduled_total_seconds_on_save = g_config.shutdown_hour * 3600 + g_config.shutdown_minute * 60;
+                        long time_diff_seconds_on_save = current_total_seconds_on_save - scheduled_total_seconds_on_save;
 
-                        if (!g_shutdown_executed_today) {
-                            long current_total_seconds = st_now.wHour * 3600 + st_now.wMinute * 60 + st_now.wSecond;
-                            long scheduled_total_seconds = g_config.shutdown_hour * 3600 + g_config.shutdown_minute * 60;
-                            long time_diff_seconds = current_total_seconds - scheduled_total_seconds;
-
-                            // 检查当前时间与排程时间的差是否在 [0, 60] 秒之间，并且没有关机在进行中
-                            if (time_diff_seconds >= 0 && time_diff_seconds <= 60) {
-                                InitiateShutdown(g_config.countdown_seconds);
-                                g_shutdown_executed_today = TRUE; // 标记今日已执行关机
-                                immediate_shutdown_triggered = TRUE;
-                            }
+                        if (time_diff_seconds_on_save >= 0 && time_diff_seconds_on_save <= 60) {
+                            InitiateShutdown(g_config.countdown_seconds);
+                            g_shutdown_executed_today = TRUE; // 标记今日已执行关机
+                            immediate_shutdown_triggered_on_save = TRUE;
                         }
                     }
-                    // --- 结束保存设置时立即检查定时关机条件 ---
 
-                    if (!immediate_shutdown_triggered) {
-                        // 如果没有立即触发关机，则设置常规定时器并显示保存成功的消息
-                        SetShutdownTimers();
+                    if (!immediate_shutdown_triggered_on_save) {
                         MessageBoxW(hWnd, L"设置已保存并应用！", L"提示", MB_OK | MB_ICONINFORMATION);
                     } else {
                         // 如果已触发关机，InitiateShutdown 会显示提示框，此处无需再显示。
@@ -647,7 +656,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     ShowWindow(g_hMainWindow, initialCmdShow);
     UpdateWindow(g_hMainWindow);
 
-    SetShutdownTimers();
+    SetShutdownTimers(); // 初次设置定时器，此时也会重置g_shutdown_executed_today
 
     // 消息循环
     MSG msg;
