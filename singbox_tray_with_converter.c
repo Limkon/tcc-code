@@ -8,7 +8,8 @@
 #include <stdlib.h>   // For malloc, free
 #include <string.h>   // For strstr, strchr, strncpy, strlen, strcpy
 #include <wchar.h>    // For wcscpy, wcslen, MultiByteToWideChar, WideCharToMultiByte, swprintf, wcsrchr (for _snwprintf)
-#include <wininet.h> // For InternetSetOptionW
+#include <wininet.h>  // For InternetSetOptionW
+#include <tchar.h>    // 为了 _tcscpy_s 等安全函数
 
 #define WM_TRAY (WM_USER + 1)
 #define ID_TRAY_EXIT 1001
@@ -23,12 +24,13 @@
 // 宏定义放置在文件顶部，使用 #ifndef 确保只定义一次
 // 这是针对“RT_HTML redefined”警告的防御性措施
 #ifndef IDR_HTML_CONVERTER
-#define IDR_HTML_CONVERTER L"CONVERTER_HTML" // Resource Hacker中定义的资源名称
+#define IDR_HTML_CONVERTER 2 // 资源名称修改为整数 2
 #endif
 
 #ifndef RT_HTML
 #define RT_HTML            L"HTML"          // Resource Hacker中定义的资源类型
 #endif
+
 
 // Global variables
 NOTIFYICONDATAW nid;
@@ -60,6 +62,8 @@ void SetSystemProxy(BOOL enable);
 BOOL IsSystemProxyEnabled();
 void UpdateMenu();
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+void OpenConverterHtmlFromResource();
+
 
 // --- 新增功能函数：从资源中读取 HTML 并打开 ---
 void OpenConverterHtmlFromResource() {
@@ -70,9 +74,10 @@ void OpenConverterHtmlFromResource() {
     DWORD dwSize = 0;   // 资源数据的大小
 
     // 1. 查找并获取嵌入的 HTML 资源句柄
-    HRSRC hRes = FindResourceW(NULL, IDR_HTML_CONVERTER, RT_HTML);
+    // 使用 MAKEINTRESOURCEW 宏来处理整数类型的资源ID
+    HRSRC hRes = FindResourceW(NULL, MAKEINTRESOURCEW(IDR_HTML_CONVERTER), RT_HTML);
     if (!hRes) {
-        MessageBoxW(NULL, L"错误：未找到嵌入的 HTML 资源！请检查EXE文件和资源名称/类型。", L"错误", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, L"错误：未找到嵌入的 HTML 资源！请检查EXE文件和资源ID/类型。", L"错误", MB_OK | MB_ICONERROR);
         return;
     }
 
@@ -89,6 +94,7 @@ void OpenConverterHtmlFromResource() {
 
     if (!pData || dwSize == 0) {
         MessageBoxW(NULL, L"错误：获取 HTML 资源数据失败（数据为空或指针无效）！", L"错误", MB_OK | MB_ICONERROR);
+        // 注意：LoadResource/LockResource 获取的资源不需要显式释放
         return;
     }
 
@@ -105,14 +111,16 @@ void OpenConverterHtmlFromResource() {
     // 将临时文件的后缀名从 .tmp 修改为 .html，这样浏览器才能正确识别
     WCHAR* dot = wcsrchr(tempFileName, L'.');
     if (dot) {
-        wcscpy(dot, L".html"); // 替换为 wcscpy，并假设目标缓冲区足够大
+        // 使用更安全的 wcscpy_s
+        wcscpy_s(dot, (size_t)(tempFileName + ARRAYSIZE(tempFileName) - dot), L".html");
     } else {
-        wcscat(tempFileName, L".html"); // 替换为 wcscat，并假设目标缓冲区足够大
+        // 使用更安全的 wcscat_s
+        wcscat_s(tempFileName, ARRAYSIZE(tempFileName), L".html");
     }
 
     // 5. 将内存中的 HTML 内容写入到这个临时文件
-    f = _wfopen(tempFileName, L"wb");
-    if (f) {
+    // 使用更安全的 _wfopen_s
+    if (_wfopen_s(&f, tempFileName, L"wb") == 0 && f != NULL) {
         fwrite(pData, 1, dwSize, f);
         fclose(f);
 
@@ -121,9 +129,8 @@ void OpenConverterHtmlFromResource() {
     } else {
         MessageBoxW(NULL, L"错误：无法写入临时 HTML 文件到磁盘。", L"错误", MB_OK | MB_ICONERROR);
     }
+    // FreeResource 不是必需的，因为系统会自动处理
 }
-// --- 结束新增功能函数 ---
-
 
 // Function to check if the application is set to autorun on startup
 BOOL IsAutorunEnabled() {
@@ -132,7 +139,7 @@ BOOL IsAutorunEnabled() {
     GetModuleFileNameW(NULL, path, MAX_PATH);
 
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                     0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+                      0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         WCHAR value[MAX_PATH];
         DWORD size = sizeof(value);
         LONG res = RegQueryValueExW(hKey, L"singbox_tray", NULL, NULL, (LPBYTE)value, &size);
@@ -168,11 +175,11 @@ void StartSingBox() {
     si.wShowWindow = SW_HIDE;
 
     WCHAR cmdLine[MAX_PATH];
-    wcscpy(cmdLine, L"sing-box.exe run -c config.json"); // 替换为 wcscpy
-    // 注意：wcscpy 不进行边界检查，确保 cmdLine 缓冲区足够大
+    // 使用更安全的 wcscpy_s
+    wcscpy_s(cmdLine, ARRAYSIZE(cmdLine), L"sing-box.exe run -c config.json");
 
     BOOL success = CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE,
-                                  CREATE_NO_WINDOW | CREATE_NEW_CONSOLE,
+                                  CREATE_NO_WINDOW, // CREATE_NEW_CONSOLE 会闪现一个窗口，CREATE_NO_WINDOW 更彻底
                                   NULL, NULL, &si, &pi);
 
     if (!success) {
@@ -195,8 +202,9 @@ void StopSingBox() {
 
 // Corrected function to safely replace the "outbound" tag in config.json
 void SafeReplaceOutbound(const wchar_t* newTagW) {
-    FILE* f = _wfopen(L"config.json", L"rb");
-    if (!f) {
+    FILE* f = NULL;
+    // 使用更安全的 _wfopen_s
+    if (_wfopen_s(&f, L"config.json", L"rb") != 0 || !f) {
         MessageBoxW(NULL, L"无法打开 config.json 文件进行读取。", L"错误", MB_OK | MB_ICONERROR);
         return;
     }
@@ -204,6 +212,12 @@ void SafeReplaceOutbound(const wchar_t* newTagW) {
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
+    
+    if (size <= 0) { // 增加对空文件的检查
+        fclose(f);
+        MessageBoxW(NULL, L"config.json 文件为空或读取大小错误。", L"错误", MB_OK | MB_ICONERROR);
+        return;
+    }
 
     char* buffer = (char*)malloc(size + 1);
     if (!buffer) {
@@ -249,10 +263,11 @@ void SafeReplaceOutbound(const wchar_t* newTagW) {
         return;
     }
 
-    long prefixLen = currentTagStartQuote - buffer;
-    long suffixLen = size - (currentTagEndQuote - buffer);
+    size_t prefixLen = currentTagStartQuote - buffer;
+    size_t newTagMbLen = strlen(newTagMb);
+    const char* suffixStart = currentTagEndQuote;
 
-    long newBufferSize = prefixLen + strlen(newTagMb) + suffixLen + 1;
+    size_t newBufferSize = prefixLen + newTagMbLen + strlen(suffixStart) + 1;
     char* newBuffer = (char*)malloc(newBufferSize);
     if (!newBuffer) {
         MessageBoxW(NULL, L"内存分配失败。", L"错误", MB_OK | MB_ICONERROR);
@@ -261,15 +276,15 @@ void SafeReplaceOutbound(const wchar_t* newTagW) {
         return;
     }
 
+    // 使用更高效和安全的内存操作构建新内容
     memcpy(newBuffer, buffer, prefixLen);
-    newBuffer[prefixLen] = '\0';
+    memcpy(newBuffer + prefixLen, newTagMb, newTagMbLen);
+    // 使用 strcpy_s 替代 strcat 以复制剩余部分
+    strcpy_s(newBuffer + prefixLen + newTagMbLen, newBufferSize - (prefixLen + newTagMbLen), suffixStart);
 
-    strcat(newBuffer, newTagMb); // 替换为 strcat
-    strcat(newBuffer, currentTagEndQuote); // 替换为 strcat
-    // 注意：strcat 不进行边界检查，确保 newBuffer 足够大
-
-    FILE* out = _wfopen(L"config.json", L"wb");
-    if (!out) {
+    FILE* out = NULL;
+    // 使用更安全的 _wfopen_s
+    if (_wfopen_s(&out, L"config.json", L"wb") != 0 || !out) {
         MessageBoxW(NULL, L"无法打开 config.json 文件进行写入。", L"错误", MB_OK | MB_ICONERROR);
         free(buffer);
         free(newTagMb);
@@ -288,8 +303,8 @@ void SafeReplaceOutbound(const wchar_t* newTagW) {
 // Function to switch the active node
 void SwitchNode(const wchar_t* tag) {
     SafeReplaceOutbound(tag);
-    wcscpy(currentNode, tag); // 替换为 wcscpy
-    // 注意：wcscpy 不进行边界检查，确保 currentNode 缓冲区足够大
+    // 使用更安全的 wcscpy_s
+    wcscpy_s(currentNode, ARRAYSIZE(currentNode), tag);
     StopSingBox();
     StartSingBox();
 }
@@ -297,14 +312,20 @@ void SwitchNode(const wchar_t* tag) {
 // Function to parse node tags from config.json
 BOOL ParseTags() {
     nodeCount = 0;
-    FILE* f = _wfopen(L"config.json", L"rb");
-    if (!f) {
+    FILE* f = NULL;
+    // 使用更安全的 _wfopen_s
+    if (_wfopen_s(&f, L"config.json", L"rb") != 0 || !f) {
         return FALSE;
     }
 
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
+
+    if (size <= 0) { // 增加对空文件的检查
+        fclose(f);
+        return FALSE;
+    }
 
     char* buffer = (char*)malloc(size + 1);
     if (!buffer) {
@@ -319,15 +340,16 @@ BOOL ParseTags() {
     if (outbounds) {
         char* pos = outbounds;
         while ((pos = strstr(pos, "\"tag\": \"")) != NULL && nodeCount < ARRAYSIZE(nodeTags)) {
-            pos += 8;
+            pos += 8; // strlen("\"tag\": \"")
             char* end = strchr(pos, '"');
-            if (end && (end - pos < ARRAYSIZE(nodeTags[0]))) {
+            if (end && (end - pos < (ptrdiff_t)ARRAYSIZE(nodeTags[0]))) {
                 char temp[ARRAYSIZE(nodeTags[0])];
-                strncpy(temp, pos, end - pos); // 替换为 strncpy
-                temp[end - pos] = '\0'; // strncpy 不会自动添加空终止符，所以这一行很重要
+                // 使用更安全的 strncpy_s
+                strncpy_s(temp, ARRAYSIZE(temp), pos, end - pos);
                 MultiByteToWideChar(CP_UTF8, 0, temp, -1, nodeTags[nodeCount], ARRAYSIZE(nodeTags[0]));
                 nodeCount++;
             }
+            if (!end) break; // 防止死循环
             pos = end;
         }
     }
@@ -336,12 +358,12 @@ BOOL ParseTags() {
     if (route_section) {
         char* pos = strstr(route_section, "\"outbound\": \"");
         if (pos) {
-            pos += 13;
+            pos += 13; // strlen("\"outbound\": \"")
             char* end = strchr(pos, '"');
-            if (end && (end - pos < ARRAYSIZE(currentNode))) {
+            if (end && (end - pos < (ptrdiff_t)ARRAYSIZE(currentNode))) {
                 char temp[ARRAYSIZE(currentNode)];
-                strncpy(temp, pos, end - pos); // 替换为 strncpy
-                temp[end - pos] = '\0'; // strncpy 不会自动添加空终止符，所以这一行很重要
+                // 使用更安全的 strncpy_s
+                strncpy_s(temp, ARRAYSIZE(temp), pos, end - pos);
                 MultiByteToWideChar(CP_UTF8, 0, temp, -1, currentNode, ARRAYSIZE(currentNode));
             }
         }
@@ -354,14 +376,20 @@ BOOL ParseTags() {
 // Function to read the HTTP inbound listen_port from config.json
 int GetHttpInboundPort() {
     int port = 0;
-    FILE* f = _wfopen(L"config.json", L"rb");
-    if (!f) {
+    FILE* f = NULL;
+    // 使用更安全的 _wfopen_s
+    if (_wfopen_s(&f, L"config.json", L"rb") != 0 || !f) {
         return 0;
     }
 
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
+
+    if (size <= 0) { // 增加对空文件的检查
+        fclose(f);
+        return 0;
+    }
 
     char* buffer = (char*)malloc(size + 1);
     if (!buffer) {
@@ -378,32 +406,27 @@ int GetHttpInboundPort() {
         char* arr_open_bracket = strchr(inbounds_arr_start, '[');
         if (arr_open_bracket) {
             char* current_pos = arr_open_bracket;
-            int brace_count = 0;
+            
+            while ((current_pos = strchr(current_pos, '{')) != NULL) {
+                 char* object_start = current_pos;
+                 char* object_end = strchr(object_start, '}'); // 简化查找，假设没有嵌套对象
 
-            while ((current_pos = strchr(current_pos + 1, '{')) != NULL) {
-                brace_count = 1;
-                char* search_end_for_object = current_pos;
+                 if (!object_end) break; // 找不到配对的 '}'，退出循环
 
-                while (brace_count > 0 && search_end_for_object < buffer + size) {
-                    search_end_for_object++;
-                    if (*search_end_for_object == '{') brace_count++;
-                    else if (*search_end_for_object == '}') brace_count--;
-                }
-
-                if (brace_count == 0 && search_end_for_object > current_pos) {
-                    char* type_key_pos = strstr(current_pos, "\"type\": \"http\"");
-                    if (type_key_pos && type_key_pos < search_end_for_object) {
-                        char* port_key_pos = strstr(current_pos, "\"listen_port\":");
-                        if (port_key_pos && port_key_pos < search_end_for_object) {
-                            port_key_pos += strlen("\"listen_port\":");
-                            if (sscanf(port_key_pos, "%d", &port) == 1) {
-                                free(buffer);
-                                return port;
-                            }
-                        }
-                    }
-                }
-                current_pos = search_end_for_object;
+                 // 在当前 { ... } 对象范围内查找
+                 char* type_key_pos = strstr(object_start, "\"type\": \"http\"");
+                 if (type_key_pos && type_key_pos < object_end) {
+                     char* port_key_pos = strstr(object_start, "\"listen_port\":");
+                     if (port_key_pos && port_key_pos < object_end) {
+                         port_key_pos += strlen("\"listen_port\":");
+                         // 使用更安全的 sscanf_s
+                         if (sscanf_s(port_key_pos, " %d", &port) == 1) {
+                             free(buffer);
+                             return port;
+                         }
+                     }
+                 }
+                 current_pos = object_end;
             }
         }
     }
@@ -411,6 +434,7 @@ int GetHttpInboundPort() {
     free(buffer);
     return 0;
 }
+
 
 // Function to set or unset system proxy
 void SetSystemProxy(BOOL enable) {
@@ -425,7 +449,8 @@ void SetSystemProxy(BOOL enable) {
     }
 
     if (enable) {
-        _snwprintf(proxyServer, ARRAYSIZE(proxyServer), L"127.0.0.1:%d", port); // 替换为 _snwprintf
+        // 使用更安全的 swprintf_s
+        swprintf_s(proxyServer, ARRAYSIZE(proxyServer), L"127.0.0.1:%d", port);
     } else {
         proxyServer[0] = L'\0';
     }
@@ -437,6 +462,7 @@ void SetSystemProxy(BOOL enable) {
             RegSetValueExW(hKey, REG_VALUE_PROXY_SERVER, 0, REG_SZ, (const BYTE*)proxyServer, (wcslen(proxyServer) + 1) * sizeof(WCHAR));
             RegSetValueExW(hKey, REG_VALUE_PROXY_OVERRIDE, 0, REG_SZ, (const BYTE*)L"<local>", (wcslen(L"<local>") + 1) * sizeof(WCHAR));
         } else {
+            // 清理时最好使用 RegDeleteValueW
             RegDeleteValueW(hKey, REG_VALUE_PROXY_SERVER);
             RegDeleteValueW(hKey, REG_VALUE_PROXY_OVERRIDE);
         }
@@ -457,20 +483,20 @@ BOOL IsSystemProxyEnabled() {
     WCHAR proxyServer[MAX_PATH];
     DWORD dwProxySize = sizeof(proxyServer);
     int port = GetHttpInboundPort();
-    WCHAR expectedProxyServer[64];
-    _snwprintf(expectedProxyServer, ARRAYSIZE(expectedProxyServer), L"127.0.0.1:%d", port); // 替换为 _snwprintf
 
-    dwProxySize = sizeof(proxyServer);
+    if (port <= 0) return FALSE; // 如果没有有效端口，代理不可能被我们启用
+
+    WCHAR expectedProxyServer[64];
+    // 使用更安全的 swprintf_s
+    swprintf_s(expectedProxyServer, ARRAYSIZE(expectedProxyServer), L"127.0.0.1:%d", port);
 
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_PATH_PROXY, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
         LONG res1 = RegQueryValueExW(hKey, REG_VALUE_PROXY_ENABLE, NULL, NULL, (LPBYTE)&dwEnable, &dwSize);
         LONG res2 = RegQueryValueExW(hKey, REG_VALUE_PROXY_SERVER, NULL, NULL, (LPBYTE)proxyServer, &dwProxySize);
         RegCloseKey(hKey);
 
-        if (port > 0) {
-            return (res1 == ERROR_SUCCESS && dwEnable == 1 &&
-                                            res2 == ERROR_SUCCESS && wcscmp(proxyServer, expectedProxyServer) == 0);
-        }
+        return (res1 == ERROR_SUCCESS && dwEnable == 1 &&
+                res2 == ERROR_SUCCESS && wcscmp(proxyServer, expectedProxyServer) == 0);
     }
     return FALSE;
 }
@@ -575,7 +601,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
     // 尝试解析标签，如果失败则直接退出
     if (!ParseTags()) {
-        MessageBoxW(NULL, L"无法读取 config.json 文件，请确保其存在且格式正确。程序将退出。", L"错误", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, L"无法读取或解析 config.json 文件，请确保其存在且格式正确。程序将退出。", L"错误", MB_OK | MB_ICONERROR);
         if (hMutex) CloseHandle(hMutex);
         return 1;
     }
@@ -612,7 +638,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = wc.hIcon;
-    lstrcpyW(nid.szTip, L"sing-box 正在运行");
+    // 使用更安全的 wcscpy_s
+    wcscpy_s(nid.szTip, ARRAYSIZE(nid.szTip), L"sing-box 正在运行");
 
     // Add the tray icon to the notification area
     if (!Shell_NotifyIconW(NIM_ADD, &nid)) {
