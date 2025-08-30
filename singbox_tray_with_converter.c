@@ -564,7 +564,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = wc.hIcon;
-    wcscpy_s(nid.szTip, ARRAYSIZE(nid.szTip), L"sing-box 正在运行");
+    wcscpy_s(nid.szTip, ARRAYSIZE(nid.szTip), L"程序正在运行...");
 
     Shell_NotifyIconW(NIM_ADD, &nid);
     StartSingBox();
@@ -581,3 +581,4 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     UnregisterClassW(CLASS_NAME, hInstance);
     return (int)msg.wParam;
 }
+
