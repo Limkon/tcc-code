@@ -1,7 +1,6 @@
 #define UNICODE
 #define _UNICODE
 
-// 修正：为 TCC 添加宏定义以确保函数可见
 #define __STDC_WANT_LIB_EXT1__ 1
 #define _WIN32_WINNT 0x0601 
 
@@ -14,8 +13,7 @@
 #include <wchar.h>
 #include <wininet.h>
 
-// --- 外部依赖 ---
-#include "cJSON.h" // 引入 cJSON 库头文件
+#include "cJSON.h" 
 
 #define WM_TRAY (WM_USER + 1)
 #define ID_TRAY_EXIT 1001
@@ -31,7 +29,7 @@
 #define RT_HTML L"HTML"
 #endif
 
-// --- 全局变量 ---
+// 全局变量
 NOTIFYICONDATAW nid;
 HWND hwnd;
 HMENU hMenu, hNodeSubMenu;
@@ -42,10 +40,11 @@ wchar_t** nodeTags = NULL;
 int nodeCount = 0;
 int nodeCapacity = 0;
 wchar_t currentNode[64] = L"";
+int httpPort = 0;
 
 const wchar_t* REG_PATH_PROXY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 
-// --- 函数声明 ---
+// 函数声明
 void ShowTrayTip(const wchar_t* title, const wchar_t* message);
 void ShowError(const wchar_t* title, const wchar_t* message);
 BOOL ReadFileToBuffer(const wchar_t* filename, char** buffer, long* fileSize);
@@ -65,7 +64,7 @@ void OpenConverterHtmlFromResource();
 void CleanupDynamicNodes();
 
 
-// --- 辅助函数 ---
+// 辅助函数
 
 void ShowTrayTip(const wchar_t* title, const wchar_t* message) {
     nid.uFlags = NIF_INFO;
@@ -138,11 +137,12 @@ void CleanupDynamicNodes() {
 }
 
 
-// --- 核心功能函数 ---
+// 核心功能函数
 
 BOOL ParseTags() {
     CleanupDynamicNodes();
     currentNode[0] = L'\0';
+    httpPort = 0;
 
     char* buffer = NULL;
     long size = 0;
@@ -156,7 +156,6 @@ BOOL ParseTags() {
         return FALSE;
     }
 
-    // 解析 outbounds 列表
     cJSON* outbounds = cJSON_GetObjectItem(root, "outbounds");
     cJSON* outbound = NULL;
     cJSON_ArrayForEach(outbound, outbounds) {
@@ -185,7 +184,6 @@ BOOL ParseTags() {
         }
     }
 
-    // 解析当前选定节点，兼容 route.rules[0].outbound 格式
     cJSON* route = cJSON_GetObjectItem(root, "route");
     if (route) {
         cJSON* rules = cJSON_GetObjectItem(route, "rules");
@@ -198,11 +196,23 @@ BOOL ParseTags() {
                 }
             }
         }
-        // 作为备选，仍然检查 final 字段
         if (currentNode[0] == L'\0') {
             cJSON* final_outbound = cJSON_GetObjectItem(route, "final");
             if (cJSON_IsString(final_outbound) && final_outbound->valuestring) {
                 MultiByteToWideChar(CP_UTF8, 0, final_outbound->valuestring, -1, currentNode, ARRAYSIZE(currentNode));
+            }
+        }
+    }
+
+    cJSON* inbounds = cJSON_GetObjectItem(root, "inbounds");
+    cJSON* inbound = NULL;
+    cJSON_ArrayForEach(inbound, inbounds) {
+        cJSON* type = cJSON_GetObjectItem(inbound, "type");
+        if (cJSON_IsString(type) && strcmp(type->valuestring, "http") == 0) {
+            cJSON* listenPort = cJSON_GetObjectItem(inbound, "listen_port");
+            if (cJSON_IsNumber(listenPort)) {
+                httpPort = listenPort->valueint;
+                break;
             }
         }
     }
@@ -213,35 +223,7 @@ BOOL ParseTags() {
 }
 
 int GetHttpInboundPort() {
-    int port = 0;
-    char* buffer = NULL;
-    long size = 0;
-    if (!ReadFileToBuffer(L"config.json", &buffer, &size)) {
-        return 0;
-    }
-
-    cJSON* root = cJSON_Parse(buffer);
-    if (!root) {
-        free(buffer);
-        return 0;
-    }
-
-    cJSON* inbounds = cJSON_GetObjectItem(root, "inbounds");
-    cJSON* inbound = NULL;
-    cJSON_ArrayForEach(inbound, inbounds) {
-        cJSON* type = cJSON_GetObjectItem(inbound, "type");
-        if (cJSON_IsString(type) && strcmp(type->valuestring, "http") == 0) {
-            cJSON* listenPort = cJSON_GetObjectItem(inbound, "listen_port");
-            if (cJSON_IsNumber(listenPort)) {
-                port = listenPort->valueint;
-                break;
-            }
-        }
-    }
-
-    cJSON_Delete(root);
-    free(buffer);
-    return port;
+    return httpPort;
 }
 
 
@@ -271,32 +253,53 @@ void SwitchNode(const wchar_t* tag) {
     ShowTrayTip(L"切换成功", message);
 }
 
-
 void SetSystemProxy(BOOL enable) {
-    HKEY hKey;
-    DWORD dwEnable = enable ? 1 : 0;
     int port = GetHttpInboundPort();
-
     if (port == 0 && enable) {
         MessageBoxW(NULL, L"未找到HTTP入站端口，无法设置系统代理。", L"错误", MB_OK | MB_ICONERROR);
         return;
     }
 
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_PATH_PROXY, 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-        RegSetValueExW(hKey, L"ProxyEnable", 0, REG_DWORD, (const BYTE*)&dwEnable, sizeof(dwEnable));
-        if (enable) {
-            wchar_t proxyServer[64];
-            swprintf_s(proxyServer, ARRAYSIZE(proxyServer), L"127.0.0.1:%d", port);
-            RegSetValueExW(hKey, L"ProxyServer", 0, REG_SZ, (const BYTE*)proxyServer, (wcslen(proxyServer) + 1) * sizeof(wchar_t));
-            RegSetValueExW(hKey, L"ProxyOverride", 0, REG_SZ, (const BYTE*)L"<local>", (wcslen(L"<local>") + 1) * sizeof(wchar_t));
-        } else {
-            RegDeleteValueW(hKey, L"ProxyServer");
-            RegDeleteValueW(hKey, L"ProxyOverride");
-        }
-        RegCloseKey(hKey);
-        InternetSetOptionW(NULL, INTERNET_OPTION_SETTINGS_CHANGED, NULL, 0);
-        InternetSetOptionW(NULL, INTERNET_OPTION_REFRESH, NULL, 0);
+    INTERNET_PER_CONN_OPTION_LISTW list;
+    INTERNET_PER_CONN_OPTIONW options[3];
+    DWORD dwBufSize = sizeof(list);
+
+    // 设置三个选项：代理类型标志、代理服务器地址、代理例外列表
+    options[0].dwOption = INTERNET_PER_CONN_FLAGS;
+    options[1].dwOption = INTERNET_PER_CONN_PROXY_SERVER;
+    options[2].dwOption = INTERNET_PER_CONN_PROXY_BYPASS;
+
+    if (enable) {
+        wchar_t proxyServer[64];
+        swprintf_s(proxyServer, ARRAYSIZE(proxyServer), L"127.0.0.1:%d", port);
+
+        // 启用代理：设置 PROXY_TYPE_PROXY 标志，并提供服务器和例外列表
+        options[0].Value.dwValue = PROXY_TYPE_PROXY;
+        options[1].Value.pszValue = proxyServer;
+        options[2].Value.pszValue = L"<local>"; // 绕过本地地址
+    } else {
+        // 禁用代理：设置 PROXY_TYPE_DIRECT 标志，清空服务器和例外列表
+        options[0].Value.dwValue = PROXY_TYPE_DIRECT;
+        options[1].Value.pszValue = L"";
+        options[2].Value.pszValue = L"";
     }
+
+    // 填充列表结构
+    list.dwSize = sizeof(list);
+    list.pszConnection = NULL; // NULL 表示应用于默认的 LAN 连接
+    list.dwOptionCount = 3;    // 我们要修改三个选项
+    list.dwOptionError = 0;
+    list.pOptions = options;
+
+    // 原子性地应用所有更改
+    if (!InternetSetOptionW(NULL, INTERNET_OPTION_PER_CONNECTION_OPTION, &list, dwBufSize)) {
+        ShowError(L"代理设置失败", L"调用 InternetSetOptionW 失败。");
+        return;
+    }
+
+    // 再次通知系统设置已更改，确保所有应用程序都能刷新
+    InternetSetOptionW(NULL, INTERNET_OPTION_SETTINGS_CHANGED, NULL, 0);
+    InternetSetOptionW(NULL, INTERNET_OPTION_REFRESH, NULL, 0);
 }
 
 
@@ -304,27 +307,34 @@ BOOL IsSystemProxyEnabled() {
     HKEY hKey;
     DWORD dwEnable = 0;
     DWORD dwSize = sizeof(dwEnable);
-    wchar_t proxyServer[MAX_PATH];
+    wchar_t proxyServer[MAX_PATH] = {0};
     DWORD dwProxySize = sizeof(proxyServer);
     int port = GetHttpInboundPort();
-
-    if (port <= 0) return FALSE;
-
-    wchar_t expectedProxyServer[64];
-    swprintf_s(expectedProxyServer, ARRAYSIZE(expectedProxyServer), L"127.0.0.1:%d", port);
+    
+    BOOL isEnabled = FALSE;
 
     if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_PATH_PROXY, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        LONG res1 = RegQueryValueExW(hKey, L"ProxyEnable", NULL, NULL, (LPBYTE)&dwEnable, &dwSize);
-        LONG res2 = RegQueryValueExW(hKey, L"ProxyServer", NULL, NULL, (LPBYTE)proxyServer, &dwProxySize);
+        if (RegQueryValueExW(hKey, L"ProxyEnable", NULL, NULL, (LPBYTE)&dwEnable, &dwSize) == ERROR_SUCCESS) {
+            if (dwEnable == 1) {
+                if (port > 0) {
+                    wchar_t expectedProxyServer[64];
+                    swprintf_s(expectedProxyServer, ARRAYSIZE(expectedProxyServer), L"127.0.0.1:%d", port);
+                    
+                    if (RegQueryValueExW(hKey, L"ProxyServer", NULL, NULL, (LPBYTE)proxyServer, &dwProxySize) == ERROR_SUCCESS) {
+                        if (wcscmp(proxyServer, expectedProxyServer) == 0) {
+                            isEnabled = TRUE;
+                        }
+                    }
+                }
+            }
+        }
         RegCloseKey(hKey);
-
-        return (res1 == ERROR_SUCCESS && dwEnable == 1 &&
-                res2 == ERROR_SUCCESS && wcscmp(proxyServer, expectedProxyServer) == 0);
     }
-    return FALSE;
+    
+    return isEnabled;
 }
 
-// 使用 cJSON 安全地修改配置文件
+
 void SafeReplaceOutbound(const wchar_t* newTag) {
     char* buffer = NULL;
     long size = 0;
@@ -333,7 +343,6 @@ void SafeReplaceOutbound(const wchar_t* newTag) {
         return;
     }
 
-    // 修正：这是个笔误，正确的函数名是 WideCharToMultiByte
     int mbLen = WideCharToMultiByte(CP_UTF8, 0, newTag, -1, NULL, 0, NULL, NULL);
     char* newTagMb = (char*)malloc(mbLen);
     if (!newTagMb) { free(buffer); return; }
@@ -360,7 +369,6 @@ void SafeReplaceOutbound(const wchar_t* newTag) {
                 }
             }
         }
-        // 作为备选，仍然尝试修改 final 字段
         if (!updated) {
             cJSON* final_outbound = cJSON_GetObjectItem(route, "final");
             if (final_outbound) {
@@ -376,7 +384,7 @@ void SafeReplaceOutbound(const wchar_t* newTag) {
             fwrite(newContent, 1, strlen(newContent), out);
             fclose(out);
         }
-        free(newContent); // cJSON_Print 分配的内存需要释放
+        free(newContent); 
     }
 
     cJSON_Delete(root);
@@ -447,7 +455,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 
-// --- WinMain 及其他函数 ---
+// WinMain 及其他函数
 
 void StopSingBox() {
     if (pi.hProcess) {
@@ -525,6 +533,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
     wchar_t szPath[MAX_PATH];
     GetModuleFileNameW(NULL, szPath, MAX_PATH);
+    // 修正：这是导致所有文件读取失败的根源bug，必须使用'\\'
     wchar_t* p = wcsrchr(szPath, L'\\');
     if (p) {
         *p = L'\0';
