@@ -1,1 +1,1 @@
-tcc -DWIDE_IS_WCHAR singbox_tray_with_converter.c -o singbox_tray_switch.exe -luser32 -lkernel32 -lshell32 -lwininet -ladvapi32 >log.txt 2>&1
+tcc singbox_tray_with_converter.c cJSON.c -o singbox_tray.exe -lgdi32 -lwininet -luser32 -lkernel32 -lshell32 -ladvapi32 >log.txt 2>&1
