@@ -5,9 +5,9 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <stdio.h>    // For FILE, fopen, fclose, fseek, ftell, fread, sscanf
-#include <stdlib.h>   // For malloc, free
+#include <stdlib.h>   // For malloc, free, realloc
 #include <string.h>   // For strstr, strchr, strncpy, strlen, strcpy
-#include <wchar.h>    // For wcscpy, wcslen, MultiByteToWideChar, WideCharToMultiByte, swprintf, wcsrchr (for _snwprintf)
+#include <wchar.h>    // For wcscpy, wcslen, MultiByteToWideChar, WideCharToMultiByte, swprintf, wcsrchr
 #include <wininet.h>  // For InternetSetOptionW
 #include <tchar.h>    // 为了 _tcscpy_s 等安全函数
 
@@ -40,8 +40,11 @@ HANDLE hMutex = NULL;
 PROCESS_INFORMATION pi; // Global PROCESS_INFORMATION to track the sing-box process
 
 wchar_t currentNode[64] = L""; // Stores the currently active node tag
-int nodeCount = 0; // Number of discovered nodes
-wchar_t nodeTags[10][64]; // Array to store node tags (max 10 nodes, max 64 chars per tag)
+
+// --- 动态节点数组 ---
+wchar_t** nodeTags = NULL; // 指向节点标签字符串指针数组的指针
+int nodeCount = 0;         // 发现的节点数量
+int nodeCapacity = 0;      // 节点数组的当前容量
 
 // Registry key for system proxy settings (Internet Explorer settings)
 #define REG_PATH_PROXY L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings"
@@ -63,6 +66,7 @@ BOOL IsSystemProxyEnabled();
 void UpdateMenu();
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 void OpenConverterHtmlFromResource();
+void CleanupDynamicNodes();
 
 
 // --- 新增功能函数：从资源中读取 HTML 并打开 ---
@@ -311,7 +315,9 @@ void SwitchNode(const wchar_t* tag) {
 
 // Function to parse node tags from config.json
 BOOL ParseTags() {
-    nodeCount = 0;
+    // 每次解析前，清理旧的动态数组
+    CleanupDynamicNodes();
+
     FILE* f = NULL;
     // 使用更安全的 _wfopen_s
     if (_wfopen_s(&f, L"config.json", L"rb") != 0 || !f) {
@@ -339,17 +345,47 @@ BOOL ParseTags() {
     char* outbounds = strstr(buffer, "\"outbounds\":");
     if (outbounds) {
         char* pos = outbounds;
-        while ((pos = strstr(pos, "\"tag\": \"")) != NULL && nodeCount < ARRAYSIZE(nodeTags)) {
+        while ((pos = strstr(pos, "\"tag\": \"")) != NULL) {
+            // 检查容量是否足够
+            if (nodeCount >= nodeCapacity) {
+                // 容量不足，进行扩容（通常是翻倍）
+                int newCapacity = (nodeCapacity == 0) ? 10 : nodeCapacity * 2;
+                wchar_t** newTags = (wchar_t**)realloc(nodeTags, newCapacity * sizeof(wchar_t*));
+                if (!newTags) {
+                    // realloc 失败，内存不足
+                    MessageBoxW(NULL, L"为节点列表扩容失败，内存不足。", L"错误", MB_OK | MB_ICONERROR);
+                    free(buffer);
+                    // 清理已分配的部分
+                    CleanupDynamicNodes();
+                    return FALSE;
+                }
+                nodeTags = newTags;
+                nodeCapacity = newCapacity;
+            }
+            
             pos += 8; // strlen("\"tag\": \"")
             char* end = strchr(pos, '"');
-            if (end && (end - pos < (ptrdiff_t)ARRAYSIZE(nodeTags[0]))) {
-                char temp[ARRAYSIZE(nodeTags[0])];
-                // 使用更安全的 strncpy_s
-                strncpy_s(temp, ARRAYSIZE(temp), pos, end - pos);
-                MultiByteToWideChar(CP_UTF8, 0, temp, -1, nodeTags[nodeCount], ARRAYSIZE(nodeTags[0]));
+            if (end) {
+                // 提取标签（多字节UTF-8）
+                size_t tagLen = end - pos;
+                char* tempTagMb = (char*)malloc(tagLen + 1);
+                if (!tempTagMb) { /* 错误处理 */ free(buffer); CleanupDynamicNodes(); return FALSE; }
+                
+                strncpy_s(tempTagMb, tagLen + 1, pos, tagLen);
+
+                // 将UTF-8转换为宽字符
+                int wideLen = MultiByteToWideChar(CP_UTF8, 0, tempTagMb, -1, NULL, 0);
+                nodeTags[nodeCount] = (wchar_t*)malloc(wideLen * sizeof(wchar_t));
+                 if (!nodeTags[nodeCount]) { /* 错误处理 */ free(tempTagMb); free(buffer); CleanupDynamicNodes(); return FALSE; }
+
+                MultiByteToWideChar(CP_UTF8, 0, tempTagMb, -1, nodeTags[nodeCount], wideLen);
+                
+                free(tempTagMb);
                 nodeCount++;
+            } else {
+                 break; // 格式错误，找不到结束引号
             }
-            if (!end) break; // 防止死循环
+
             pos = end;
         }
     }
@@ -554,6 +590,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (IsSystemProxyEnabled()) {
                 SetSystemProxy(FALSE);
             }
+            // 在退出前清理动态分配的内存
+            CleanupDynamicNodes();
             PostQuitMessage(0);
         } else if (id == ID_TRAY_AUTORUN) {
             SetAutorun(!IsAutorunEnabled());
@@ -566,6 +604,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+// 新增：清理动态节点数组内存的函数
+void CleanupDynamicNodes() {
+    if (nodeTags) {
+        for (int i = 0; i < nodeCount; i++) {
+            if (nodeTags[i]) {
+                free(nodeTags[i]);
+                nodeTags[i] = NULL;
+            }
+        }
+        free(nodeTags);
+        nodeTags = NULL;
+    }
+    nodeCount = 0;
+    nodeCapacity = 0;
 }
 
 // Entry point for the Windows application
@@ -603,6 +657,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     if (!ParseTags()) {
         MessageBoxW(NULL, L"无法读取或解析 config.json 文件，请确保其存在且格式正确。程序将退出。", L"错误", MB_OK | MB_ICONERROR);
         if (hMutex) CloseHandle(hMutex);
+        CleanupDynamicNodes(); // 确保即使启动失败也清理内存
         return 1;
     }
 
@@ -620,6 +675,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     if (!RegisterClassW(&wc)) {
         MessageBoxW(NULL, L"注册窗口类失败！", L"错误", MB_OK | MB_ICONERROR);
         if (hMutex) CloseHandle(hMutex);
+        CleanupDynamicNodes();
         return 1;
     }
 
@@ -628,6 +684,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     if (!hwnd) {
         MessageBoxW(NULL, L"创建窗口失败！", L"错误", MB_OK | MB_ICONERROR);
         if (hMutex) CloseHandle(hMutex);
+        CleanupDynamicNodes();
         return 1;
     }
 
@@ -646,6 +703,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
         MessageBoxW(NULL, L"添加托盘图标失败！", L"错误", MB_OK | MB_ICONERROR);
         DestroyWindow(hwnd);
         if (hMutex) CloseHandle(hMutex);
+        CleanupDynamicNodes();
         return 1;
     }
 
@@ -660,6 +718,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
     // Cleanup on exit
     Shell_NotifyIconW(NIM_DELETE, &nid);
+    CleanupDynamicNodes(); // 在主循环结束后也调用清理，确保万无一失
     if (hMutex) CloseHandle(hMutex);
     UnregisterClassW(CLASS_NAME, hInstance);
     return (int)msg.wParam;
