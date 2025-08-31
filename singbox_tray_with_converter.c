@@ -12,6 +12,7 @@
 #include <string.h>
 #include <wchar.h>
 #include <wininet.h>
+#include <commctrl.h> // 引入通用控件库头文件
 
 #include "cJSON.h" 
 
@@ -20,7 +21,10 @@
 #define ID_TRAY_AUTORUN 1002
 #define ID_TRAY_SYSTEM_PROXY 1003
 #define ID_TRAY_OPEN_CONVERTER 1004
+#define ID_TRAY_SET_HOTKEY 1005 // 新增：设置快捷键菜单ID
 #define ID_TRAY_NODE_BASE 2000
+
+#define ID_HOTKEY_TOGGLE_VISIBILITY 1 // 新增：热键ID
 
 #ifndef IDR_HTML_CONVERTER
 #define IDR_HTML_CONVERTER 2
@@ -28,6 +32,9 @@
 #ifndef RT_HTML
 #define RT_HTML L"HTML"
 #endif
+
+// 对话框控件ID
+#define IDC_HOTKEY 101
 
 // 全局变量
 NOTIFYICONDATAW nid;
@@ -41,6 +48,13 @@ int nodeCount = 0;
 int nodeCapacity = 0;
 wchar_t currentNode[64] = L"";
 int httpPort = 0;
+
+// 新增：快捷键和可见性状态相关的全局变量
+BOOL g_isIconVisible = TRUE;
+UINT g_hotkeyModifiers = MOD_CONTROL | MOD_ALT; // 默认 Ctrl + Alt
+UINT g_hotkeyVk = 'S'; // 默认 S
+const wchar_t* INI_FILE = L".\\set.ini";
+
 
 const wchar_t* REG_PATH_PROXY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 
@@ -63,14 +77,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 void OpenConverterHtmlFromResource();
 void CleanupDynamicNodes();
 
+// 新增函数声明
+void LoadSettings();
+void SaveSettings();
+void RegisterTrayHotKey();
+void UnregisterTrayHotKey();
+void ToggleTrayIconVisibility();
+INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
+void OpenSettingsDialog();
+
 
 // 辅助函数
 
 void ShowTrayTip(const wchar_t* title, const wchar_t* message) {
+    if (!g_isIconVisible) return; // 如果图标不可见，则不显示提示
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
-    wcscpy_s(nid.szInfoTitle, ARRAYSIZE(nid.szInfoTitle), title);
-    wcscpy_s(nid.szInfo, ARRAYSIZE(nid.szInfo), message);
+    wcscpy(nid.szInfoTitle, title);
+    wcscpy(nid.szInfo, message);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
 }
@@ -80,7 +104,7 @@ void ShowError(const wchar_t* title, const wchar_t* message) {
     wchar_t* sysMsgBuf = NULL;
     wchar_t fullMessage[1024];
 
-    wcscpy_s(fullMessage, ARRAYSIZE(fullMessage), message);
+    wcscpy(fullMessage, message);
 
     if (errorCode != 0) {
         FormatMessageW(
@@ -89,8 +113,8 @@ void ShowError(const wchar_t* title, const wchar_t* message) {
             (LPWSTR)&sysMsgBuf, 0, NULL);
 
         if (sysMsgBuf) {
-            wcscat_s(fullMessage, ARRAYSIZE(fullMessage), L"\n\n系统错误信息:\n");
-            wcscat_s(fullMessage, ARRAYSIZE(fullMessage), sysMsgBuf);
+            wcscat(fullMessage, L"\n\n系统错误信息:\n");
+            wcscat(fullMessage, sysMsgBuf);
             LocalFree(sysMsgBuf);
         }
     }
@@ -233,7 +257,7 @@ void StartSingBox() {
     si.wShowWindow = SW_HIDE;
 
     wchar_t cmdLine[MAX_PATH];
-    wcscpy_s(cmdLine, ARRAYSIZE(cmdLine), L"sing-box.exe run -c config.json");
+    wcscpy(cmdLine, L"sing-box.exe run -c config.json");
 
     if (!CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
         ShowError(L"错误", L"启动 sing-box 失败！请确保 sing-box.exe 和 config.json 存在于同一目录下。");
@@ -244,7 +268,7 @@ void StartSingBox() {
 
 void SwitchNode(const wchar_t* tag) {
     SafeReplaceOutbound(tag);
-    wcscpy_s(currentNode, ARRAYSIZE(currentNode), tag);
+    wcscpy(currentNode, tag);
     StopSingBox();
     StartSingBox();
 
@@ -264,7 +288,6 @@ void SetSystemProxy(BOOL enable) {
     INTERNET_PER_CONN_OPTIONW options[3];
     DWORD dwBufSize = sizeof(list);
 
-    // 设置三个选项：代理类型标志、代理服务器地址、代理例外列表
     options[0].dwOption = INTERNET_PER_CONN_FLAGS;
     options[1].dwOption = INTERNET_PER_CONN_PROXY_SERVER;
     options[2].dwOption = INTERNET_PER_CONN_PROXY_BYPASS;
@@ -272,32 +295,26 @@ void SetSystemProxy(BOOL enable) {
     if (enable) {
         wchar_t proxyServer[64];
         swprintf_s(proxyServer, ARRAYSIZE(proxyServer), L"127.0.0.1:%d", port);
-
-        // 启用代理：设置 PROXY_TYPE_PROXY 标志，并提供服务器和例外列表
         options[0].Value.dwValue = PROXY_TYPE_PROXY;
         options[1].Value.pszValue = proxyServer;
-        options[2].Value.pszValue = L"<local>"; // 绕过本地地址
+        options[2].Value.pszValue = L"<local>"; 
     } else {
-        // 禁用代理：设置 PROXY_TYPE_DIRECT 标志，清空服务器和例外列表
         options[0].Value.dwValue = PROXY_TYPE_DIRECT;
         options[1].Value.pszValue = L"";
         options[2].Value.pszValue = L"";
     }
 
-    // 填充列表结构
     list.dwSize = sizeof(list);
-    list.pszConnection = NULL; // NULL 表示应用于默认的 LAN 连接
-    list.dwOptionCount = 3;    // 我们要修改三个选项
+    list.pszConnection = NULL; 
+    list.dwOptionCount = 3;   
     list.dwOptionError = 0;
     list.pOptions = options;
 
-    // 原子性地应用所有更改
     if (!InternetSetOptionW(NULL, INTERNET_OPTION_PER_CONNECTION_OPTION, &list, dwBufSize)) {
         ShowError(L"代理设置失败", L"调用 InternetSetOptionW 失败。");
         return;
     }
 
-    // 再次通知系统设置已更改，确保所有应用程序都能刷新
     InternetSetOptionW(NULL, INTERNET_OPTION_SETTINGS_CHANGED, NULL, 0);
     InternetSetOptionW(NULL, INTERNET_OPTION_REFRESH, NULL, 0);
 }
@@ -413,6 +430,8 @@ void UpdateMenu() {
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_AUTORUN, L"开机启动");
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_SYSTEM_PROXY, L"系统代理");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_SET_HOTKEY, L"设置快捷键"); // 新增菜单项
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"退出");
 }
 
@@ -434,10 +453,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         int id = LOWORD(wParam);
 
         if (id == ID_TRAY_EXIT) {
-            Shell_NotifyIconW(NIM_DELETE, &nid);
+            if (g_isIconVisible) {
+                Shell_NotifyIconW(NIM_DELETE, &nid);
+            }
             if (IsSystemProxyEnabled()) SetSystemProxy(FALSE);
             StopSingBox();
             CleanupDynamicNodes();
+            SaveSettings(); // 退出时保存设置
             PostQuitMessage(0);
         } else if (id == ID_TRAY_AUTORUN) {
             SetAutorun(!IsAutorunEnabled());
@@ -447,8 +469,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             ShowTrayTip(L"系统代理", isEnabled ? L"系统代理已关闭" : L"系统代理已开启");
         } else if (id == ID_TRAY_OPEN_CONVERTER) {
             OpenConverterHtmlFromResource();
+        } else if (id == ID_TRAY_SET_HOTKEY) { // 处理设置快捷键菜单点击
+            OpenSettingsDialog();
         } else if (id >= ID_TRAY_NODE_BASE && id < ID_TRAY_NODE_BASE + nodeCount) {
             SwitchNode(nodeTags[id - ID_TRAY_NODE_BASE]);
+        }
+    } else if (msg == WM_HOTKEY) { // 新增：处理热键消息
+        if (wParam == ID_HOTKEY_TOGGLE_VISIBILITY) {
+            ToggleTrayIconVisibility();
         }
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -512,8 +540,8 @@ void OpenConverterHtmlFromResource() {
     GetTempFileNameW(tempPath, L"sbx", 0, tempFileName);
 
     wchar_t* dot = wcsrchr(tempFileName, L'.');
-    if (dot) wcscpy_s(dot, (size_t)(tempFileName + ARRAYSIZE(tempFileName) - dot), L".html");
-    else wcscat_s(tempFileName, ARRAYSIZE(tempFileName), L".html");
+    if (dot) wcscpy(dot, L".html");
+    else wcscat(tempFileName, L".html");
 
     FILE* f = NULL;
     if (_wfopen_s(&f, tempFileName, L"wb") == 0 && f != NULL) {
@@ -523,6 +551,176 @@ void OpenConverterHtmlFromResource() {
     }
 }
 
+// =========================================================================
+// 新增的函数实现
+// =========================================================================
+
+// 从 set.ini 加载设置
+void LoadSettings() {
+    g_isIconVisible = GetPrivateProfileIntW(L"Settings", L"Visible", 1, INI_FILE) != 0;
+    g_hotkeyModifiers = GetPrivateProfileIntW(L"Settings", L"Modifiers", MOD_CONTROL | MOD_ALT, INI_FILE);
+    g_hotkeyVk = GetPrivateProfileIntW(L"Settings", L"KeyCode", 'S', INI_FILE);
+}
+
+// 保存设置到 set.ini
+void SaveSettings() {
+    wchar_t buffer[16];
+    _itow_s(g_isIconVisible, buffer, ARRAYSIZE(buffer), 10);
+    WritePrivateProfileStringW(L"Settings", L"Visible", buffer, INI_FILE);
+
+    _itow_s(g_hotkeyModifiers, buffer, ARRAYSIZE(buffer), 10);
+    WritePrivateProfileStringW(L"Settings", L"Modifiers", buffer, INI_FILE);
+
+    _itow_s(g_hotkeyVk, buffer, ARRAYSIZE(buffer), 10);
+    WritePrivateProfileStringW(L"Settings", L"KeyCode", buffer, INI_FILE);
+}
+
+// 注册全局热键
+void RegisterTrayHotKey() {
+    if (g_hotkeyVk != 0) { // 确保有一个有效的虚拟键码
+        if (!RegisterHotKey(hwnd, ID_HOTKEY_TOGGLE_VISIBILITY, g_hotkeyModifiers, g_hotkeyVk)) {
+            ShowError(L"热键注册失败", L"无法注册快捷键，可能已被其他程序占用。");
+        }
+    }
+}
+
+// 注销全局热键
+void UnregisterTrayHotKey() {
+    UnregisterHotKey(hwnd, ID_HOTKEY_TOGGLE_VISIBILITY);
+}
+
+// 切换托盘图标的可见性
+void ToggleTrayIconVisibility() {
+    g_isIconVisible = !g_isIconVisible;
+    if (g_isIconVisible) {
+        Shell_NotifyIconW(NIM_ADD, &nid);
+    } else {
+        Shell_NotifyIconW(NIM_DELETE, &nid);
+    }
+}
+
+// 设置对话框的过程函数
+INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+    case WM_INITDIALOG: {
+        // 初始化热键控件的值
+        HWND hHotKey = GetDlgItem(hDlg, IDC_HOTKEY);
+        SendMessage(hHotKey, HKM_SETHOTKEY, MAKEWORD(g_hotkeyVk, g_hotkeyModifiers), 0);
+        return (INT_PTR)TRUE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK) {
+            HWND hHotKey = GetDlgItem(hDlg, IDC_HOTKEY);
+            LRESULT hotKey = SendMessage(hHotKey, HKM_GETHOTKEY, 0, 0);
+            
+            // 注销旧热键
+            UnregisterTrayHotKey();
+
+            // 更新全局变量
+            g_hotkeyVk = LOBYTE(hotKey);
+            g_hotkeyModifiers = HIBYTE(hotKey);
+            
+            // 注册新热键
+            RegisterTrayHotKey();
+
+            // 保存设置
+            SaveSettings();
+
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        }
+        if (LOWORD(wParam) == IDCANCEL) {
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        }
+        break;
+    }
+    return (INT_PTR)FALSE;
+}
+
+// 打开设置对话框
+void OpenSettingsDialog() {
+    // TCC兼容性：在内存中动态创建对话框模板
+    #pragma pack(push, 2)
+    typedef struct {
+        DLGTEMPLATE DlgTemplate;
+        WORD Menu;
+        WORD Class;
+        wchar_t Title[8];
+        WORD PointSize;
+        wchar_t FontName[10];
+        // 控件1: Hotkey
+        DLGITEMTEMPLATE Hotkey;
+        WORD HotkeyClass_Prefix;
+        WORD HotkeyClass_Name;
+        wchar_t HotkeyText[1];
+        WORD HotkeyData;
+        // 控件2: OK Button
+        DLGITEMTEMPLATE OKButton;
+        WORD OKButtonClass_Prefix;
+        WORD OKButtonClass_Name;
+        wchar_t OKButtonText[3];
+        WORD OKButtonData;
+        // 控件3: Cancel Button
+        DLGITEMTEMPLATE CancelButton;
+        WORD CancelButtonClass_Prefix;
+        WORD CancelButtonClass_Name;
+        wchar_t CancelButtonText[3];
+        WORD CancelButtonData;
+    } MYDLGTEMPLATE;
+    #pragma pack(pop)
+
+    MYDLGTEMPLATE dt = {0};
+
+    // --- 对话框模板 ---
+    dt.DlgTemplate.style = DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dt.DlgTemplate.dwExtendedStyle = 0;
+    dt.DlgTemplate.cdit = 3; // 3个控件
+    dt.DlgTemplate.x = 0; dt.DlgTemplate.y = 0;
+    dt.DlgTemplate.cx = 160; dt.DlgTemplate.cy = 60;
+    dt.Menu = 0;
+    dt.Class = 0;
+    wcscpy(dt.Title, L"设置快捷键");
+    dt.PointSize = 9;
+    wcscpy(dt.FontName, L"Microsoft YaHei");
+
+    // --- 热键控件 ---
+    dt.Hotkey.style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+    dt.Hotkey.dwExtendedStyle = 0;
+    dt.Hotkey.x = 10; dt.Hotkey.y = 10;
+    dt.Hotkey.cx = 140; dt.Hotkey.cy = 14;
+    dt.Hotkey.id = IDC_HOTKEY;
+    dt.HotkeyClass_Prefix = 0xFFFF;
+    dt.HotkeyClass_Name = 0x0081; // ATOM for "msctls_hotkey32"
+    dt.HotkeyText[0] = L'\0';
+    dt.HotkeyData = 0;
+
+    // --- OK 按钮 ---
+    dt.OKButton.style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON;
+    dt.OKButton.dwExtendedStyle = 0;
+    dt.OKButton.x = 20; dt.OKButton.y = 35;
+    dt.OKButton.cx = 50; dt.OKButton.cy = 14;
+    dt.OKButton.id = IDOK;
+    dt.OKButtonClass_Prefix = 0xFFFF;
+    dt.OKButtonClass_Name = 0x0080; // ATOM for "Button"
+    wcscpy(dt.OKButtonText, L"确定");
+    dt.OKButtonData = 0;
+
+    // --- Cancel 按钮 ---
+    dt.CancelButton.style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+    dt.CancelButton.dwExtendedStyle = 0;
+    dt.CancelButton.x = 90; dt.CancelButton.y = 35;
+    dt.CancelButton.cx = 50; dt.CancelButton.cy = 14;
+    dt.CancelButton.id = IDCANCEL;
+    dt.CancelButtonClass_Prefix = 0xFFFF;
+    dt.CancelButtonClass_Name = 0x0080; // ATOM for "Button"
+    wcscpy(dt.CancelButtonText, L"取消");
+    dt.CancelButtonData = 0;
+
+    DialogBoxIndirectParamW(GetModuleHandle(NULL), (LPCDLGTEMPLATEW)&dt, hwnd, SettingsDlgProc, 0);
+}
+
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int nCmdShow) {
     hMutex = CreateMutexW(NULL, TRUE, L"Global\\SingBoxTrayMutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -531,14 +729,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
         return 0;
     }
 
+    // 初始化通用控件
+    INITCOMMONCONTROLSEX icex;
+    icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    icex.dwICC = ICC_HOTKEY_CLASS;
+    InitCommonControlsEx(&icex);
+
+
     wchar_t szPath[MAX_PATH];
     GetModuleFileNameW(NULL, szPath, MAX_PATH);
-    // 修正：这是导致所有文件读取失败的根源bug，必须使用'\\'
     wchar_t* p = wcsrchr(szPath, L'\\');
     if (p) {
         *p = L'\0';
         SetCurrentDirectoryW(szPath);
     }
+    
+    // 程序启动时加载设置
+    LoadSettings();
 
     if (!ParseTags()) {
         MessageBoxW(NULL, L"无法读取或解析 config.json 文件。", L"错误", MB_OK | MB_ICONERROR);
@@ -557,6 +764,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     RegisterClassW(&wc);
     hwnd = CreateWindowExW(0, CLASS_NAME, L"TrayApp", 0, 0, 0, 0, 0, NULL, NULL, hInstance, NULL);
     if (!hwnd) return 1;
+    
+    // 注册热键
+    RegisterTrayHotKey();
 
     nid.cbSize = sizeof(nid);
     nid.hWnd = hwnd;
@@ -564,9 +774,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = wc.hIcon;
-    wcscpy_s(nid.szTip, ARRAYSIZE(nid.szTip), L"程序正在运行...");
+    wcscpy(nid.szTip, L"程序正在运行...");
 
-    Shell_NotifyIconW(NIM_ADD, &nid);
+    // 根据加载的设置决定是否显示图标
+    if (g_isIconVisible) {
+        Shell_NotifyIconW(NIM_ADD, &nid);
+    }
+    
     StartSingBox();
 
     MSG msg;
@@ -575,10 +789,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
         DispatchMessageW(&msg);
     }
 
-    Shell_NotifyIconW(NIM_DELETE, &nid);
+    // 程序退出前清理
+    UnregisterTrayHotKey();
+    if (g_isIconVisible) {
+        Shell_NotifyIconW(NIM_DELETE, &nid);
+    }
     CleanupDynamicNodes();
     if (hMutex) CloseHandle(hMutex);
     UnregisterClassW(CLASS_NAME, hInstance);
     return (int)msg.wParam;
 }
-
