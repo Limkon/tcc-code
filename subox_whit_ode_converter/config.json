@@ -1,0 +1,103 @@
+{
+	"log":	{
+		"level":	"info"
+	},
+	"inbounds":	[{
+			"type":	"http",
+			"tag":	"http-in",
+			"listen":	"127.0.0.1",
+			"listen_port":	10809
+		}],
+	"outbounds":	[{
+			"type":	"vless",
+			"tag":	"web.xongan.eu.org-vless",
+			"server":	"www.visa.com.sg",
+			"server_port":	443,
+			"uuid":	"0058c4cc-82a2-4cd0-92ed-fe8286d261d2",
+			"tls":	{
+				"enabled":	true,
+				"server_name":	"web.xongan.eu.org"
+			},
+			"transport":	{
+				"type":	"ws",
+				"path":	"/ed=2560",
+				"headers":	{
+					"Host":	"web.xongan.eu.org"
+				}
+			}
+		}, {
+			"type":	"vless",
+			"tag":	"freesky.xio.hidns.vip-vless",
+			"server":	"www.visa.com.tw",
+			"server_port":	443,
+			"uuid":	"0058c4cc-82a2-4cd0-92ed-fe8286d261d2",
+			"tls":	{
+				"enabled":	true,
+				"server_name":	"freesky.xio.hidns.vip"
+			},
+			"transport":	{
+				"type":	"ws",
+				"path":	"/?ed=2560",
+				"headers":	{
+					"Host":	"freesky.xio.hidns.vip"
+				}
+			}
+		}, {
+			"type":	"trojan",
+			"tag":	"freesky.xio.hidns.vip-trojan",
+			"server":	"www.visa.com.tw",
+			"server_port":	443,
+			"password":	"771571215",
+			"tls":	{
+				"enabled":	true,
+				"server_name":	"freesky.xio.hidns.vip"
+			},
+			"transport":	{
+				"type":	"ws",
+				"path":	"/?ed=2560",
+				"headers":	{
+					"Host":	"freesky.xio.hidns.vip"
+				}
+			}
+		}, {
+			"type":	"vless",
+			"tag":	"xio.deusa.ddns-ip.net-vless",
+			"server":	"www.visa.com.sg",
+			"server_port":	443,
+			"uuid":	"0058c4cc-82a2-4cd0-92ed-fe8286d261d2",
+			"tls":	{
+				"enabled":	true,
+				"server_name":	"xio.deusa.ddns-ip.net"
+			},
+			"transport":	{
+				"type":	"ws",
+				"path":	"/ed=2560",
+				"headers":	{
+					"Host":	"xio.deusa.ddns-ip.net"
+				}
+			}
+		}, {
+			"type":	"vless",
+			"tag":	"xio.hidns.co-vless",
+			"server":	"xio.hidns.co",
+			"server_port":	13257,
+			"uuid":	"0058c4cc-82a2-4cd0-92ed-fe8286d261d2",
+			"tls":	{
+				"enabled":	false,
+				"server_name":	"xio.hidns.co"
+			},
+			"transport":	{
+				"type":	"ws",
+				"path":	"/ed=2560",
+				"headers":	{
+					"Host":	"xio.hidns.co"
+				}
+			}
+		}],
+	"route":	{
+		"rules":	[{
+				"inbound":	["http-in"],
+				"outbound":	"web.xongan.eu.org-vless"
+			}]
+	}
+}

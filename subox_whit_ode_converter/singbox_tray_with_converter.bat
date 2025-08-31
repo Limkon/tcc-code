@@ -1,0 +1,1 @@
+tcc -o singbox_tray.exe singbox_tray_with_converter.c cJSON.c -mwindows -lwininet -lshell32 -lshlwapi -lgdi32 -ladvapi32 -lcomctl32 >log.txt 2>&1

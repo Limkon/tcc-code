@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>节点配置转换器</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        .container {
+            background-color: #fff;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            max-width: 900px;
+            margin: auto;
+        }
+        h1 {
+            color: #0056b3;
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        textarea {
+            width: calc(100% - 20px);
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 14px;
+            min-height: 150px;
+            box-sizing: border-box; /* Include padding in width */
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            display: block;
+            width: 100%;
+            max-width: 200px;
+            margin: 0 auto 20px auto;
+            transition: background-color 0.3s ease;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        pre {
+            background-color: #eee;
+            padding: 15px;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px dashed #ccc;
+        }
+        .error {
+            color: red;
+            margin-top: 10px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>节点配置转换器</h1>
+
+        <label for="nodeInput">请输入节点信息 (每行一个):</label>
+        <textarea id="nodeInput"></textarea>
+
+        <button onclick="convertNodes()">转换</button>
+
+        <label for="outputConfig">生成的配置文件:</label>
+        <textarea id="outputConfig" readonly></textarea>
+
+        <p class="error" id="errorMessage"></p>
+    </div>
+
+    <script>
+        // 完全本地化的 Base64 解码函数，支持 UTF-8
+        function base64Decode(str) {
+            try {
+                // 1. 处理 URL-safe 字符：将 '-' 替换为 '+'，将 '_' 替换为 '/'
+                str = str.replace(/-/g, '+').replace(/_/g, '/');
+
+                // 2. 填充 Base64 字符串使其长度为 4 的倍数，以满足 atob() 的要求
+                while (str.length % 4) {
+                    str += '=';
+                }
+
+                // 3. 使用 atob() 进行 Base64 解码。atob() 返回一个 "二进制字符串" (Latin-1 编码)
+                const binary_string = atob(str);
+
+                // 4. 将二进制字符串转换为 Uint8Array 字节数组
+                const len = binary_string.length;
+                const bytes = new Uint8Array(new ArrayBuffer(len));
+                for (let i = 0; i < len; i++) {
+                    bytes[i] = binary_string.charCodeAt(i);
+                }
+
+                // 5. 使用 TextDecoder 将 UTF-8 字节数组解码为 JavaScript 字符串
+                // TextDecoder 是 Web 标准 API，用于处理不同编码的文本，是本地可用的
+                const decoder = new TextDecoder('utf-8');
+                return decoder.decode(bytes);
+
+            } catch (e) {
+                console.error("Base64 decoding error (Pure JS):", e);
+                return null;
+            }
+        }
+
+        function parseUrl(url) {
+            try {
+                const protocol = url.split('://')[0].toLowerCase();
+                if (protocol === 'vmess') {
+                    // Extract Base64 string after 'vmess://'
+                    const base64Str = url.replace('vmess://', '').trim();
+                    const decoded = base64Decode(base64Str);
+                    if (!decoded) {
+                        throw new Error("VMess base64 decoding failed.");
+                    }
+                    const vmessObj = JSON.parse(decoded);
+                    return {
+                        type: protocol,
+                        server: vmessObj.add,
+                        port: vmessObj.port,
+                        uuid: vmessObj.id,
+                        net: vmessObj.net,
+                        path: vmessObj.path,
+                        tls: vmessObj.tls,
+                        host: vmessObj.host,
+                        ps: vmessObj.ps,
+                        sni: vmessObj.sni,
+                        scy: vmessObj.scy
+                    };
+                } else {
+                    const urlObj = new URL(url);
+                    const protocol = urlObj.protocol.slice(0, -1); // Remove trailing ':'
+                    const hash = urlObj.hash ? decodeURIComponent(urlObj.hash.substring(1)) : '';
+                    const queryParams = Object.fromEntries(urlObj.searchParams.entries());
+
+                    let userInfo = urlObj.username; // For Trojan, VLESS
+                    let port = urlObj.port || (urlObj.protocol === 'https:' ? '443' : '80'); // Default ports
+                    let server = urlObj.hostname;
+
+                    if (protocol === 'trojan' || protocol === 'vless') {
+                        return {
+                            type: protocol,
+                            userInfo: userInfo,
+                            server: server,
+                            port: port,
+                            params: queryParams,
+                            tag: hash || server
+                        };
+                    }
+                }
+            } catch (e) {
+                console.error("Error parsing URL:", url, e);
+                return null;
+            }
+            return null;
+        }
+
+        function convertNodes() {
+            const nodeInput = document.getElementById('nodeInput').value;
+            const outputConfig = document.getElementById('outputConfig');
+            const errorMessage = document.getElementById('errorMessage');
+            errorMessage.textContent = '';
+            outputConfig.value = '';
+
+            const nodeUrls = nodeInput.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+            const outbounds = [];
+            let defaultVlessTag = '';
+
+            nodeUrls.forEach(url => {
+                const parsed = parseUrl(url);
+                if (!parsed) {
+                    errorMessage.textContent += `无法解析节点: ${url}\n`;
+                    return;
+                }
+
+                if (parsed.type === 'trojan') {
+                    const tag = parsed.tag.replace(/[^a-zA-Z0-9-]/g, '_');
+                    outbounds.push({
+                        type: "trojan",
+                        tag: `${tag}-trojan`,
+                        server: parsed.params.host || parsed.server,
+                        server_port: parseInt(parsed.port, 10),
+                        password: parsed.userInfo,
+                        tls: {
+                            enabled: parsed.params.security === 'tls',
+                            server_name: parsed.params.sni || parsed.params.host || parsed.server
+                        },
+                        transport: {
+                            type: parsed.params.type,
+                            path: decodeURIComponent(parsed.params.path || ''),
+                            headers: {
+                                Host: parsed.params.host || parsed.server
+                            }
+                        }
+                    });
+                } else if (parsed.type === 'vless') {
+                    const tag = parsed.tag.replace(/[^a-zA-Z0-9-]/g, '_');
+                    const currentVlessTag = `${tag}-vless`;
+                    outbounds.push({
+                        type: "vless",
+                        tag: currentVlessTag,
+                        server: parsed.params.host || parsed.server,
+                        server_port: parseInt(parsed.port, 10),
+                        uuid: parsed.userInfo,
+                        tls: {
+                            enabled: parsed.params.security === 'tls',
+                            server_name: parsed.params.sni || parsed.params.host || parsed.server
+                        },
+                        transport: {
+                            type: parsed.params.type,
+                            path: decodeURIComponent(parsed.params.path || ''),
+                            headers: {
+                                Host: parsed.params.host || parsed.server
+                            }
+                        }
+                    });
+                    if (!defaultVlessTag) {
+                        defaultVlessTag = currentVlessTag;
+                    }
+                } else if (parsed.type === 'vmess') {
+                    let tag = parsed.ps || parsed.server;
+                    // 对 tag 进行更严格的清理，确保它只包含 ASCII 字符，因为它是配置中的标识符
+                    // 移除所有非字母数字、非点、非下划线、非短横线的字符
+                    tag = tag.replace(/[^a-zA-Z0-9.\-_]/g, '_'); 
+
+                    const vmessOutbound = {
+                        type: "vmess",
+                        tag: `${tag}-vmess`,
+                        server: parsed.server,
+                        server_port: parseInt(parsed.port, 10),
+                        uuid: parsed.uuid,
+                        security: parsed.scy || "auto",
+                        transport: {
+                            type: parsed.net,
+                            path: parsed.path || '',
+                            headers: {
+                                Host: parsed.host || ''
+                            }
+                        }
+                    };
+
+                    if (parsed.tls === 'tls') {
+                        vmessOutbound.tls = {
+                            enabled: true,
+                            server_name: parsed.sni || parsed.host || parsed.server
+                        };
+                    }
+
+                    outbounds.push(vmessOutbound);
+                }
+            });
+
+            if (outbounds.length === 0) {
+                errorMessage.textContent = '没有解析到有效的节点信息。';
+                return;
+            }
+
+            if (!defaultVlessTag && outbounds.length > 0) {
+                defaultVlessTag = outbounds[0].tag;
+            }
+
+            const config = {
+                log: {
+                    level: "info"
+                },
+                inbounds: [{
+                    type: "http",
+                    tag: "http-in",
+                    listen: "127.0.0.1",
+                    listen_port: 10809
+                }],
+                outbounds: outbounds,
+                route: {
+                    rules: [{
+                        inbound: ["http-in"],
+                        outbound: defaultVlessTag
+                    }]
+                }
+            };
+
+            outputConfig.value = JSON.stringify(config, null, 2);
+        }
+    </script>
+</body>
+</html>
