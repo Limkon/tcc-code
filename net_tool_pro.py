@@ -9,15 +9,29 @@ from datetime import datetime
 from icmplib import ping, exceptions
 import socket
 import csv
+import platform
+
+# 平台相关的导入，用于设置系统代理
+try:
+    if platform.system() == "Windows":
+        import winreg
+        import ctypes
+except ImportError:
+    # 允许程序在非Windows系统上运行，相关功能将不可用
+    pass
 
 class NetToolApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title("多功能网络工具 (v3.6 布局优化)")
-        self.geometry("800x720")
+        # 更新标题和窗口大小以适应新按钮
+        self.title("多功能网络工具 (v3.7 系统代理)")
+        self.geometry("900x720")
 
         self.task_queue = queue.Queue()
         self.stop_batch_event = threading.Event()
+        # 新增：代理状态变量
+        self.is_proxy_set = False
+        self.proxy_settings_to_restore = {}
         
         self.create_widgets()
         self.create_context_menus()
@@ -91,6 +105,11 @@ class NetToolApp(TkinterDnD.Tk):
         self.scan_button.pack(side=tk.LEFT, padx=10, ipady=5)
         self.extract_button = ttk.Button(control_frame, text="从输入源提取IP", command=self.start_extract_task)
         self.extract_button.pack(side=tk.LEFT, padx=10, ipady=5)
+        
+        # 新增: 设置系统代理按钮
+        self.proxy_button = ttk.Button(control_frame, text="设置系统代理", command=self.toggle_system_proxy)
+        self.proxy_button.pack(side=tk.LEFT, padx=5, ipady=5)
+
         self.stop_button = ttk.Button(control_frame, text="停止当前任务", command=self.stop_batch_task, state=tk.DISABLED)
         self.stop_button.pack(side=tk.RIGHT, padx=10, ipady=5)
 
@@ -113,16 +132,16 @@ class NetToolApp(TkinterDnD.Tk):
         self.batch_progress_fill_id = self.batch_progress_canvas.create_rectangle(0, 0, 0, 20, fill=self.bar_color, outline="")
         self.batch_progress_text_id = self.batch_progress_canvas.create_text(0, 0, text="", anchor=tk.CENTER)
 
-        # --- 【修正】底部状态栏与导出按钮框架 ---
+        # --- 底部状态栏与导出按钮框架 ---
         bottom_frame = ttk.Frame(main_frame)
-        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0)) # Pack the container to the bottom
+        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
 
         self.status_var = tk.StringVar(value="请选择输入方式并开始操作...")
         self.status_label = ttk.Label(bottom_frame, textvariable=self.status_var, anchor=tk.W)
-        self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True) # Status label on the left, expands to fill space
+        self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         self.export_button = ttk.Button(bottom_frame, text="将结果导出为CSV", command=self.export_to_csv)
-        self.export_button.pack(side=tk.RIGHT, padx=(10, 0)) # Export button on the right
+        self.export_button.pack(side=tk.RIGHT, padx=(10, 0))
         
     def create_context_menus(self):
         self.text_context_menu = tk.Menu(self, tearoff=0)
@@ -169,6 +188,10 @@ class NetToolApp(TkinterDnD.Tk):
         self.clipboard_clear(); self.clipboard_append("\n".join(text_to_copy))
     
     def on_closing(self):
+        # 修改：退出时检查并提示恢复代理设置
+        if self.is_proxy_set:
+            if messagebox.askyesno("退出前确认", "检测到程序设置了系统代理，是否在退出前自动取消代理设置？"):
+                self._unset_system_proxy()
         self.stop_batch_event.set()
         self.destroy()
 
@@ -267,9 +290,10 @@ class NetToolApp(TkinterDnD.Tk):
             return content
 
     def set_controls_state(self, state, task_running=False):
+        # 修改：将新按钮加入状态管理
         start_buttons = [self.ping_button, self.scan_button, 
                          self.extract_button, self.browse_button, 
-                         self.single_scan_button]
+                         self.single_scan_button, self.proxy_button]
         for widget in start_buttons:
             widget.config(state=state)
         
@@ -406,6 +430,115 @@ class NetToolApp(TkinterDnD.Tk):
         except ValueError:
             messagebox.showerror("端口格式错误", f"无效的端口或范围: '{part}'。\n请确保端口在1-65535之间，且范围格式为 '起始-结束'。")
             return None
+
+    # --- 系统代理相关方法 ---
+    def toggle_system_proxy(self):
+        """切换系统代理的设置或取消状态。"""
+        if platform.system() != "Windows":
+            messagebox.showerror("功能限制", "此功能目前仅支持Windows操作系统。")
+            return
+
+        if self.is_proxy_set:
+            # 如果代理已设置，则调用取消方法
+            self._unset_system_proxy()
+        else:
+            # 如果代理未设置，则从Treeview中获取信息进行设置
+            selected_items = self.tree.selection()
+            if len(selected_items) != 1:
+                messagebox.showerror("选择错误", "请在结果列表中【包含IP和端口列】的结果里，精确选择一个目标作为代理服务器。")
+                return
+
+            item = self.tree.item(selected_items[0])
+            values = item['values']
+            columns = self.tree['columns']
+
+            try:
+                ip_index, port_index = -1, -1
+                ip_col_names = ("目标地址",)
+                port_col_names = ("端口", "开放端口")
+
+                for i, col_name in enumerate(columns):
+                    if col_name in ip_col_names: ip_index = i
+                    elif col_name in port_col_names: port_index = i
+
+                if ip_index == -1 or port_index == -1:
+                    messagebox.showerror("数据错误", "选中的行没有有效的'目标地址'和'端口'列。\n请先执行端口扫描任务。")
+                    return
+
+                proxy_ip = str(values[ip_index])
+                proxy_port = int(values[port_index])
+
+                if not (0 < proxy_port < 65536): raise ValueError("端口号无效")
+                
+                self._set_system_proxy(proxy_ip, proxy_port)
+
+            except (ValueError, IndexError) as e:
+                messagebox.showerror("数据格式错误", f"选中的行数据无法解析为有效的IP和端口号。\n错误: {e}")
+                return
+
+    def _set_system_proxy(self, ip, port):
+        """(仅Windows) 设置系统代理。"""
+        try:
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+            # 以读写权限打开注册表项
+            internet_settings_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ | winreg.KEY_WRITE)
+
+            # 备份当前设置
+            try:
+                self.proxy_settings_to_restore['ProxyEnable'], _ = winreg.QueryValueEx(internet_settings_key, "ProxyEnable")
+            except FileNotFoundError:
+                self.proxy_settings_to_restore['ProxyEnable'] = 0 # 默认未启用
+            try:
+                self.proxy_settings_to_restore['ProxyServer'], _ = winreg.QueryValueEx(internet_settings_key, "ProxyServer")
+            except FileNotFoundError:
+                self.proxy_settings_to_restore['ProxyServer'] = "" # 默认无服务器地址
+
+            # 应用新设置
+            proxy_address = f"{ip}:{port}"
+            winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+            winreg.SetValueEx(internet_settings_key, "ProxyServer", 0, winreg.REG_SZ, proxy_address)
+            winreg.CloseKey(internet_settings_key)
+
+            # 通知系统设置已更改，使其立即生效
+            ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0) # INTERNET_OPTION_PROXY
+            ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0) # INTERNET_OPTION_REFRESH
+
+            # 更新UI状态
+            self.is_proxy_set = True
+            self.proxy_button.config(text="取消系统代理")
+            self.status_var.set(f"系统代理已设置为: {proxy_address}")
+            messagebox.showinfo("成功", f"系统代理已成功设置为 {proxy_address}")
+
+        except Exception as e:
+            messagebox.showerror("设置代理失败", f"无法修改注册表: {e}\n请尝试以管理员权限运行本程序。")
+
+    def _unset_system_proxy(self):
+        """(仅Windows) 取消系统代理，恢复到之前的设置。"""
+        try:
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+            internet_settings_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_WRITE)
+
+            # 恢复之前备份的设置
+            original_enable = self.proxy_settings_to_restore.get('ProxyEnable', 0)
+            original_server = self.proxy_settings_to_restore.get('ProxyServer', "")
+            
+            winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, original_enable)
+            winreg.SetValueEx(internet_settings_key, "ProxyServer", 0, winreg.REG_SZ, original_server)
+            winreg.CloseKey(internet_settings_key)
+
+            # 通知系统设置已更改
+            ctypes.windll.Wininet.InternetSetOptionW(0, 39, 0, 0) # INTERNET_OPTION_PROXY
+            ctypes.windll.Wininet.InternetSetOptionW(0, 37, 0, 0) # INTERNET_OPTION_REFRESH
+
+            # 更新UI状态
+            self.is_proxy_set = False
+            self.proxy_button.config(text="设置系统代理")
+            self.status_var.set("系统代理已恢复。")
+            self.proxy_settings_to_restore = {} # 清空备份
+            messagebox.showinfo("成功", "系统代理已恢复至之前设置。")
+
+        except Exception as e:
+            messagebox.showerror("取消代理失败", f"无法修改注册表: {e}\n请尝试以管理员权限运行本程序。")
 
     # --- Worker Threads ---
     def _run_ping_test(self, hosts, count, timeout):
