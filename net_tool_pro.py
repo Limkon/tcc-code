@@ -68,7 +68,7 @@ class NetToolApp(TkinterDnD.Tk):
         self.timeout_entry.grid(row=2, column=1, sticky=tk.W)
 
         ttk.Label(input_frame, text="Ping次数:").grid(row=3, column=0, sticky=tk.W, pady=2)
-        self.count_var = tk.StringVar(value="4")
+        self.count_var = tk.StringVar(value="5")
         self.count_entry = ttk.Entry(input_frame, textvariable=self.count_var, width=10)
         self.count_entry.grid(row=3, column=1, sticky=tk.W)
         
@@ -158,9 +158,11 @@ class NetToolApp(TkinterDnD.Tk):
         
         self.tree_context_menu = tk.Menu(self, tearoff=0)
         self.tree_context_menu.add_command(label="复制选中行", command=self.copy_selected_tree_rows)
+        self.tree_context_menu.add_command(label="去除不在线IP", command=self.remove_offline_ips)
         self.tree_context_menu.add_separator()
         self.tree_context_menu.add_command(label="全选", command=lambda: self.tree.selection_add(self.tree.get_children()))
         self.tree.bind("<Button-3>", self.show_tree_context_menu)
+        self.tree.bind("<Control-a>", lambda e: self.tree.selection_add(self.tree.get_children()))
         
     def show_text_context_menu(self, event):
         widget = event.widget
@@ -182,10 +184,32 @@ class NetToolApp(TkinterDnD.Tk):
         if self.tree.selection(): self.tree_context_menu.tk_popup(event.x_root, event.y_root)
 
     def copy_selected_tree_rows(self):
-        text_to_copy = ["\t".join(self.tree['columns'])]
+        columns = self.tree['columns']
+        is_extract_ip = columns == ("提取到的IP地址",)
+        text_to_copy = []
+        if not is_extract_ip:
+            text_to_copy.append("\t".join(columns))
         for item_id in self.tree.selection():
-            values = self.tree.item(item_id)['values']; text_to_copy.append("\t".join(map(str, values)))
-        self.clipboard_clear(); self.clipboard_append("\n".join(text_to_copy))
+            values = self.tree.item(item_id)['values']
+            text_to_copy.append("\t".join(map(str, values)))
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(text_to_copy))
+    
+    def remove_offline_ips(self):
+        columns = self.tree['columns']
+        if "状态" not in columns:
+            messagebox.showinfo("提示", "当前结果不包含'状态'列，无法去除不在线IP。")
+            return
+        status_index = columns.index("状态")
+        items_to_delete = []
+        for item_id in self.tree.get_children():
+            values = self.tree.item(item_id)['values']
+            status = values[status_index]
+            if status in ("超时", "无效地址", "错误"):
+                items_to_delete.append(item_id)
+        for item_id in items_to_delete:
+            self.tree.delete(item_id)
+        self.status_var.set(f"已去除 {len(items_to_delete)} 个不在线IP。")
     
     def on_closing(self):
         # 修改：退出时检查并提示恢复代理设置
