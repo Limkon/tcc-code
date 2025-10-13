@@ -33,6 +33,8 @@ class NetToolApp(TkinterDnD.Tk):
         self.is_proxy_set = False
         self.proxy_settings_to_restore = {}
         
+        self.original_data = []  # 用于存储原始结果数据，便于过滤
+        
         self.create_widgets()
         self.create_context_menus()
         self.process_queue()
@@ -42,10 +44,30 @@ class NetToolApp(TkinterDnD.Tk):
     def create_widgets(self):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # --- 底部状态栏与导出按钮框架 (修改: 优先打包到底部) ---
+        bottom_frame = ttk.Frame(main_frame)
+        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
+
+        self.status_var = tk.StringVar(value="请选择输入方式并开始操作...")
+        self.status_label = ttk.Label(bottom_frame, textvariable=self.status_var, anchor=tk.W, wraplength=800)
+        self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.export_button = ttk.Button(bottom_frame, text="将结果导出为CSV", command=self.export_to_csv)
+        self.export_button.pack(side=tk.RIGHT, padx=(10, 0))
         
-        # --- 输入区框架 (批量任务) ---
+        # --- 进度条 (修改: 打包到底部, 位于状态栏之上) ---
+        self.trough_color = '#F0F0F0'
+        self.bar_color = '#0078D7'
+        self.bar_color_complete = '#28A745' # Green color for completion
+        self.batch_progress_canvas = tk.Canvas(main_frame, height=18, background=self.trough_color, highlightthickness=0)
+        self.batch_progress_canvas.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
+        self.batch_progress_fill_id = self.batch_progress_canvas.create_rectangle(0, 0, 0, 20, fill=self.bar_color, outline="")
+        self.batch_progress_text_id = self.batch_progress_canvas.create_text(0, 0, text="", anchor=tk.CENTER)
+
+        # --- 输入区框架 (批量任务) (修改: 打包到顶部) ---
         input_frame = ttk.LabelFrame(main_frame, text="批量任务: 输入源与选项", padding="10")
-        input_frame.pack(fill=tk.X, expand=False, pady=(0, 5))
+        input_frame.pack(side=tk.TOP, fill=tk.X, expand=False, pady=(0, 5))
         
         self.input_method_var = tk.StringVar(value="file")
         ttk.Radiobutton(input_frame, text="从文件", variable=self.input_method_var, value="file", command=self.toggle_input_method).grid(row=0, column=0, sticky=tk.W, padx=5)
@@ -78,9 +100,9 @@ class NetToolApp(TkinterDnD.Tk):
         self.ports_entry.grid(row=4, column=1, sticky=tk.W)
         input_frame.columnconfigure(3, weight=1)
 
-        # --- 单个目标扫描区 ---
+        # --- 单个目标扫描区 (修改: 打包到顶部) ---
         single_scan_frame = ttk.LabelFrame(main_frame, text="单个目标端口扫描", padding="10")
-        single_scan_frame.pack(fill=tk.X, pady=5)
+        single_scan_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
 
         ttk.Label(single_scan_frame, text="目标IP或域名:").grid(row=0, column=0, sticky=tk.W, padx=5)
         self.single_ip_var = tk.StringVar(value="127.0.0.1")
@@ -96,9 +118,9 @@ class NetToolApp(TkinterDnD.Tk):
         self.single_scan_button.grid(row=0, column=4, padx=10, ipady=2)
         single_scan_frame.columnconfigure(3, weight=1)
 
-        # --- 控制区框架 ---
+        # --- 控制区框架 (修改: 打包到顶部) ---
         control_frame = ttk.LabelFrame(main_frame, text="批量任务控制", padding="10")
-        control_frame.pack(fill=tk.X, pady=5)
+        control_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
         self.ping_button = ttk.Button(control_frame, text="开始批量 Ping", command=self.start_ping_task)
         self.ping_button.pack(side=tk.LEFT, padx=10, ipady=5)
         self.scan_button = ttk.Button(control_frame, text="开始批量端口扫描", command=self.start_scan_task)
@@ -106,42 +128,29 @@ class NetToolApp(TkinterDnD.Tk):
         self.extract_button = ttk.Button(control_frame, text="从输入源提取IP", command=self.start_extract_task)
         self.extract_button.pack(side=tk.LEFT, padx=10, ipady=5)
         
-        # 新增: 设置系统代理按钮
         self.proxy_button = ttk.Button(control_frame, text="设置系统代理", command=self.toggle_system_proxy)
         self.proxy_button.pack(side=tk.LEFT, padx=5, ipady=5)
 
         self.stop_button = ttk.Button(control_frame, text="停止当前任务", command=self.stop_batch_task, state=tk.DISABLED)
         self.stop_button.pack(side=tk.RIGHT, padx=10, ipady=5)
 
-        # --- 结果区框架 ---
+        # --- 结果区框架 (修改: 最后打包, 填充剩余空间) ---
         result_frame = ttk.LabelFrame(main_frame, text="结果显示", padding="10")
         result_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        search_frame = ttk.Frame(result_frame)
+        search_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(search_frame, text="过滤结果:").pack(side=tk.LEFT, padx=5)
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=30)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.search_entry.bind("<KeyRelease>", self.filter_treeview)
         
         self.tree = ttk.Treeview(result_frame, show='headings')
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         vsb = ttk.Scrollbar(result_frame, orient="vertical", command=self.tree.yview)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.configure(yscrollcommand=vsb.set)
-        
-        # --- 进度条 ---
-        self.trough_color = '#F0F0F0'
-        self.bar_color = '#0078D7'
-        self.bar_color_complete = '#28A745' # Green color for completion
-        self.batch_progress_canvas = tk.Canvas(main_frame, height=18, background=self.trough_color, highlightthickness=0)
-        self.batch_progress_canvas.pack(fill=tk.X, pady=5)
-        self.batch_progress_fill_id = self.batch_progress_canvas.create_rectangle(0, 0, 0, 20, fill=self.bar_color, outline="")
-        self.batch_progress_text_id = self.batch_progress_canvas.create_text(0, 0, text="", anchor=tk.CENTER)
-
-        # --- 底部状态栏与导出按钮框架 ---
-        bottom_frame = ttk.Frame(main_frame)
-        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
-
-        self.status_var = tk.StringVar(value="请选择输入方式并开始操作...")
-        self.status_label = ttk.Label(bottom_frame, textvariable=self.status_var, anchor=tk.W)
-        self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
-        self.export_button = ttk.Button(bottom_frame, text="将结果导出为CSV", command=self.export_to_csv)
-        self.export_button.pack(side=tk.RIGHT, padx=(10, 0))
         
     def create_context_menus(self):
         self.text_context_menu = tk.Menu(self, tearoff=0)
@@ -159,6 +168,7 @@ class NetToolApp(TkinterDnD.Tk):
         self.tree_context_menu = tk.Menu(self, tearoff=0)
         self.tree_context_menu.add_command(label="复制选中行", command=self.copy_selected_tree_rows)
         self.tree_context_menu.add_command(label="去除不在线IP", command=self.remove_offline_ips)
+        self.tree_context_menu.add_command(label="去除重复IP", command=self.remove_duplicate_ips)
         self.tree_context_menu.add_separator()
         self.tree_context_menu.add_command(label="全选", command=lambda: self.tree.selection_add(self.tree.get_children()))
         self.tree.bind("<Button-3>", self.show_tree_context_menu)
@@ -210,6 +220,55 @@ class NetToolApp(TkinterDnD.Tk):
         for item_id in items_to_delete:
             self.tree.delete(item_id)
         self.status_var.set(f"已去除 {len(items_to_delete)} 个不在线IP。")
+        # 更新原始数据
+        self.original_data = [self.tree.item(item)['values'] for item in self.tree.get_children()]
+    
+    def remove_duplicate_ips(self):
+        columns = self.tree['columns']
+        ip_col_names = {"目标地址", "提取到的IP地址"}
+        ip_index = None
+        for i, col in enumerate(columns):
+            if col in ip_col_names:
+                ip_index = i
+                break
+        if ip_index is None:
+            messagebox.showinfo("提示", "当前结果不包含IP地址列，无法去除重复IP。")
+            return
+        
+        seen_ips = set()
+        items_to_delete = []
+        for item_id in self.tree.get_children():
+            values = self.tree.item(item_id)['values']
+            ip = values[ip_index]
+            if ip in seen_ips:
+                items_to_delete.append(item_id)
+            else:
+                seen_ips.add(ip)
+        
+        for item_id in items_to_delete:
+            self.tree.delete(item_id)
+        
+        self.status_var.set(f"已去除 {len(items_to_delete)} 个重复IP。")
+        # 更新原始数据
+        self.original_data = [self.tree.item(item)['values'] for item in self.tree.get_children()]
+    
+    def filter_treeview(self, event=None):
+        query = self.search_var.get().lower()
+        if not query:
+            # 恢复所有行
+            self.clear_treeview()
+            for values in self.original_data:
+                self.tree.insert("", "end", values=values)
+            return
+        
+        matching_items = []
+        for values in self.original_data:
+            if any(query in str(val).lower() for val in values):
+                matching_items.append(values)
+        
+        self.clear_treeview()
+        for values in matching_items:
+            self.tree.insert("", "end", values=values)
     
     def on_closing(self):
         # 修改：退出时检查并提示恢复代理设置
@@ -241,8 +300,12 @@ class NetToolApp(TkinterDnD.Tk):
                 progress_val, status_text = data
                 self.update_batch_canvas_progress(progress_val)
                 self.status_var.set(status_text)
-            elif msg_type == 'treeview_setup': self.setup_treeview_columns(data)
-            elif msg_type == 'treeview_row': self.tree.insert("", "end", values=data)
+            elif msg_type == 'treeview_setup':
+                self.original_data = []  # 重置原始数据
+                self.setup_treeview_columns(data)
+            elif msg_type == 'treeview_row':
+                item_id = self.tree.insert("", "end", values=data)
+                self.original_data.append(data)
             elif msg_type == 'treeview_clear': self.clear_treeview()
             elif msg_type == 'complete':
                 self.set_controls_state(tk.NORMAL)
