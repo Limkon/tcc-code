@@ -23,8 +23,8 @@ except ImportError:
 class NetToolApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        # 更新标题和窗口大小以适应新按钮
-        self.title("多功能网络工具 (v3.7 系统代理)")
+        # 更新标题和窗口大小以适应新按钮 (v3.8)
+        self.title("多功能网络工具 (v3.8 系统代理 - 增强版)") 
         self.geometry("900x720")
 
         self.task_queue = queue.Queue()
@@ -45,7 +45,7 @@ class NetToolApp(TkinterDnD.Tk):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # --- 底部状态栏与导出按钮框架 (修改: 优先打包到底部) ---
+        # --- 底部状态栏与导出按钮框架 ---
         bottom_frame = ttk.Frame(main_frame)
         bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
 
@@ -56,7 +56,7 @@ class NetToolApp(TkinterDnD.Tk):
         self.export_button = ttk.Button(bottom_frame, text="将结果导出为CSV", command=self.export_to_csv)
         self.export_button.pack(side=tk.RIGHT, padx=(10, 0))
         
-        # --- 进度条 (修改: 打包到底部, 位于状态栏之上) ---
+        # --- 进度条 ---
         self.trough_color = '#F0F0F0'
         self.bar_color = '#0078D7'
         self.bar_color_complete = '#28A745' # Green color for completion
@@ -65,7 +65,7 @@ class NetToolApp(TkinterDnD.Tk):
         self.batch_progress_fill_id = self.batch_progress_canvas.create_rectangle(0, 0, 0, 20, fill=self.bar_color, outline="")
         self.batch_progress_text_id = self.batch_progress_canvas.create_text(0, 0, text="", anchor=tk.CENTER)
 
-        # --- 输入区框架 (批量任务) (修改: 打包到顶部) ---
+        # --- 输入区框架 (批量任务) ---
         input_frame = ttk.LabelFrame(main_frame, text="批量任务: 输入源与选项", padding="10")
         input_frame.pack(side=tk.TOP, fill=tk.X, expand=False, pady=(0, 5))
         
@@ -100,7 +100,7 @@ class NetToolApp(TkinterDnD.Tk):
         self.ports_entry.grid(row=4, column=1, sticky=tk.W)
         input_frame.columnconfigure(3, weight=1)
 
-        # --- 单个目标扫描区 (修改: 打包到顶部) ---
+        # --- 单个目标扫描区 ---
         single_scan_frame = ttk.LabelFrame(main_frame, text="单个目标端口扫描", padding="10")
         single_scan_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
 
@@ -118,7 +118,7 @@ class NetToolApp(TkinterDnD.Tk):
         self.single_scan_button.grid(row=0, column=4, padx=10, ipady=2)
         single_scan_frame.columnconfigure(3, weight=1)
 
-        # --- 控制区框架 (修改: 打包到顶部) ---
+        # --- 控制区框架 ---
         control_frame = ttk.LabelFrame(main_frame, text="批量任务控制", padding="10")
         control_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
         self.ping_button = ttk.Button(control_frame, text="开始批量 Ping", command=self.start_ping_task)
@@ -134,7 +134,7 @@ class NetToolApp(TkinterDnD.Tk):
         self.stop_button = ttk.Button(control_frame, text="停止当前任务", command=self.stop_batch_task, state=tk.DISABLED)
         self.stop_button.pack(side=tk.RIGHT, padx=10, ipady=5)
 
-        # --- 结果区框架 (修改: 最后打包, 填充剩余空间) ---
+        # --- 结果区框架 (Treeview with Scrollbar) ---
         result_frame = ttk.LabelFrame(main_frame, text="结果显示", padding="10")
         result_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
@@ -146,16 +146,22 @@ class NetToolApp(TkinterDnD.Tk):
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.search_entry.bind("<KeyRelease>", self.filter_treeview)
         
-        self.tree = ttk.Treeview(result_frame, show='headings')
+        # Treeview 和 滚动条布局优化
+        tree_scroll_frame = ttk.Frame(result_frame)
+        tree_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.tree = ttk.Treeview(tree_scroll_frame, show='headings')
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb = ttk.Scrollbar(result_frame, orient="vertical", command=self.tree.yview)
+        
+        # 垂直滚动条
+        vsb = ttk.Scrollbar(tree_scroll_frame, orient="vertical", command=self.tree.yview)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.configure(yscrollcommand=vsb.set)
         
     def create_context_menus(self):
         self.text_context_menu = tk.Menu(self, tearoff=0)
         self.text_context_menu.add_command(label="剪切", command=lambda: self.focus_get().event_generate("<<Cut>>"))
-        self.text_context_menu.add_command(label="复制", command=lambda: self.focus_get().event_generate("<<Copy>>"))
+        self.text_context_menu.add_command(label="复制", command=lambda: self.focus_get().event_generate("<<Copy>>") if self.focus_get() else None)
         self.text_context_menu.add_command(label="粘贴", command=lambda: self.focus_get().event_generate("<<Paste>>"))
         self.text_context_menu.add_separator()
         self.text_context_menu.add_command(label="全选", command=self.select_all_text)
@@ -167,6 +173,8 @@ class NetToolApp(TkinterDnD.Tk):
         
         self.tree_context_menu = tk.Menu(self, tearoff=0)
         self.tree_context_menu.add_command(label="复制选中行", command=self.copy_selected_tree_rows)
+        # 新增的删除菜单项
+        self.tree_context_menu.add_command(label="删除选中行", command=self.remove_selected_rows) 
         self.tree_context_menu.add_command(label="去除不在线IP", command=self.remove_offline_ips)
         self.tree_context_menu.add_command(label="去除重复IP", command=self.remove_duplicate_ips)
         self.tree_context_menu.add_separator()
@@ -191,7 +199,9 @@ class NetToolApp(TkinterDnD.Tk):
         return "break"
 
     def show_tree_context_menu(self, event):
-        if self.tree.selection(): self.tree_context_menu.tk_popup(event.x_root, event.y_root)
+        # 只有当Treeview中有内容时才允许弹出菜单
+        if self.tree.get_children(): 
+            self.tree_context_menu.tk_popup(event.x_root, event.y_root)
 
     def copy_selected_tree_rows(self):
         columns = self.tree['columns']
@@ -204,7 +214,22 @@ class NetToolApp(TkinterDnD.Tk):
             text_to_copy.append("\t".join(map(str, values)))
         self.clipboard_clear()
         self.clipboard_append("\n".join(text_to_copy))
-    
+
+    def remove_selected_rows(self):
+        """删除Treeview中所有选中的行，并同步更新 self.original_data。"""
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showinfo("提示", "请先选中要删除的行。")
+            return
+
+        for item_id in selected_items:
+            self.tree.delete(item_id)
+        
+        # 重建 self.original_data 以确保同步
+        self.original_data = [self.tree.item(item)['values'] for item in self.tree.get_children()]
+
+        self.status_var.set(f"已删除 {len(selected_items)} 行。")
+
     def remove_offline_ips(self):
         columns = self.tree['columns']
         if "状态" not in columns:
@@ -219,9 +244,10 @@ class NetToolApp(TkinterDnD.Tk):
                 items_to_delete.append(item_id)
         for item_id in items_to_delete:
             self.tree.delete(item_id)
-        self.status_var.set(f"已去除 {len(items_to_delete)} 个不在线IP。")
+        
         # 更新原始数据
         self.original_data = [self.tree.item(item)['values'] for item in self.tree.get_children()]
+        self.status_var.set(f"已去除 {len(items_to_delete)} 个不在线IP。")
     
     def remove_duplicate_ips(self):
         columns = self.tree['columns']
@@ -239,7 +265,8 @@ class NetToolApp(TkinterDnD.Tk):
         items_to_delete = []
         for item_id in self.tree.get_children():
             values = self.tree.item(item_id)['values']
-            ip = values[ip_index]
+            # 将IP地址列的值转换为字符串，以确保键的类型一致
+            ip = str(values[ip_index]) 
             if ip in seen_ips:
                 items_to_delete.append(item_id)
             else:
@@ -248,9 +275,9 @@ class NetToolApp(TkinterDnD.Tk):
         for item_id in items_to_delete:
             self.tree.delete(item_id)
         
-        self.status_var.set(f"已去除 {len(items_to_delete)} 个重复IP。")
         # 更新原始数据
         self.original_data = [self.tree.item(item)['values'] for item in self.tree.get_children()]
+        self.status_var.set(f"已去除 {len(items_to_delete)} 个重复IP。")
     
     def filter_treeview(self, event=None):
         query = self.search_var.get().lower()
@@ -271,12 +298,12 @@ class NetToolApp(TkinterDnD.Tk):
             self.tree.insert("", "end", values=values)
     
     def on_closing(self):
-        # 修改：退出时检查并提示恢复代理设置
+        # 退出时检查并提示恢复代理设置
         if self.is_proxy_set:
             if messagebox.askyesno("退出前确认", "检测到程序设置了系统代理，是否在退出前自动取消代理设置？"):
                 self._unset_system_proxy()
         self.stop_batch_event.set()
-        self.destroy()
+        self.destroy() # 确保窗口关闭
 
     def update_batch_canvas_progress(self, percentage):
         self.after(0, self._update_canvas, percentage)
@@ -304,7 +331,8 @@ class NetToolApp(TkinterDnD.Tk):
                 self.original_data = []  # 重置原始数据
                 self.setup_treeview_columns(data)
             elif msg_type == 'treeview_row':
-                item_id = self.tree.insert("", "end", values=data)
+                # item_id = self.tree.insert("", "end", values=data) # item_id is not strictly needed here
+                self.tree.insert("", "end", values=data) 
                 self.original_data.append(data)
             elif msg_type == 'treeview_clear': self.clear_treeview()
             elif msg_type == 'complete':
@@ -369,15 +397,33 @@ class NetToolApp(TkinterDnD.Tk):
             return None
             
         if get_hosts_list: 
-            hosts = re.findall(r'[a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}', content)
-            ips = re.findall(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', content)
-            all_found = hosts + ips
+            # 改进的正则匹配，尝试匹配域名和IPv4地址
+            hosts = re.findall(r'(?:[a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}|(?:\d{1,3}\.){3}\d{1,3})', content)
+            
+            # 进一步过滤出有效的IP地址
+            valid_ips = []
+            valid_hosts = []
+            for item in hosts:
+                # 检查是否为有效IP
+                is_ip = re.match(r'^(\d{1,3}\.){3}\d{1,3}$', item)
+                if is_ip:
+                    try:
+                        if all(0 <= int(octet) <= 255 for octet in item.split('.')):
+                            valid_ips.append(item)
+                    except (ValueError, IndexError):
+                        continue
+                else:
+                    # 假定为域名，进行简单的去重
+                    valid_hosts.append(item)
+
+            all_found = valid_hosts + valid_ips
+            # 返回去重并排序后的列表
             return sorted(list(set(line.strip() for line in all_found if line.strip())))
         else: 
             return content
 
     def set_controls_state(self, state, task_running=False):
-        # 修改：将新按钮加入状态管理
+        # 将新按钮加入状态管理
         start_buttons = [self.ping_button, self.scan_button, 
                          self.extract_button, self.browse_button, 
                          self.single_scan_button, self.proxy_button]
@@ -647,7 +693,7 @@ class NetToolApp(TkinterDnD.Tk):
                     status = "在线"
                     avg_rtt = f"{host_result.avg_rtt:.2f}"
                     loss = f"{host_result.packet_loss * 100:.0f}"
-                    last_ttl = "N/A"
+                    last_ttl = str(host_result.ttl) # 确保是字符串
                 else:
                     status = "超时"
                     avg_rtt = "N/A"
@@ -739,12 +785,14 @@ class NetToolApp(TkinterDnD.Tk):
         self.task_queue.put(('treeview_clear', None))
         self.task_queue.put(('treeview_setup', ("提取到的IP地址",)))
         
+        # 匹配IPv4地址
         ip_pattern = r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
         candidates = re.findall(ip_pattern, content)
         
         valid_ips = []
         for ip in candidates:
             try:
+                # 进一步验证每个部分是否在0-255之间
                 if all(0 <= int(octet) <= 255 for octet in ip.split('.')):
                     valid_ips.append(ip)
             except (ValueError, IndexError):
@@ -762,7 +810,7 @@ class NetToolApp(TkinterDnD.Tk):
             progress = (i + 1) * 100 / total_found
             self.task_queue.put(('batch_progress', (progress, f"正在提取IP... ({i+1}/{total_found})")))
             self.task_queue.put(('treeview_row', (ip,)))
-            time.sleep(0.01)
+            time.sleep(0.01) # 防止UI线程过度阻塞
 
         completion_msg = f"任务已被用户停止。" if self.stop_batch_event.is_set() else f"提取完成，共找到 {total_found} 个唯一IP。"
         self.task_queue.put(('complete', completion_msg))
