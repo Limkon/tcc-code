@@ -1,0 +1,1 @@
+pyinstaller --onefile --windowed --icon=aggregator_app.ico --name="´úÀí¾ÛºÏÆ÷" aggregator_app.py
