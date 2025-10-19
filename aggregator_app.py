@@ -21,6 +21,7 @@ import traceback
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import queue
+import socket # (新增) 导入 socket 库用于测速
 
 # 为了支持SOCKS代理，需要安装 PySocks
 try:
@@ -213,7 +214,7 @@ class DynamicSubscriptionFinder:
                 if subscriptions: self.gui_queue.put(('found_links', subscriptions))
             except Exception as e: self._log(f"一个文件提取任务失败: {e}")
 
-# --- 后端处理核心 ---
+# --- 后端处理核心 (集成测速) ---
 class RealProxyAggregator:
     def __init__(self, gui_queue):
         self.gui_queue = gui_queue
@@ -254,12 +255,112 @@ class RealProxyAggregator:
             self._log(f"错误：处理 {url} 失败。原因: {e}")
             return []
 
+    @staticmethod
+    def _tcp_ping(address, port, timeout=2):
+        """(新增) 尝试TCP连接并返回延迟(ms)，失败返回 float('inf')"""
+        try:
+            port_int = int(port)
+            if port_int <= 0 or port_int > 65535:
+                return float('inf')
+        except (ValueError, TypeError):
+            return float('inf')
+
+        try:
+            # 自动解析 IPv4/IPv6
+            addr_info_list = socket.getaddrinfo(address, port_int, 0, socket.SOCK_STREAM)
+            
+            if not addr_info_list:
+                return float('inf') # 域名无法解析
+
+            # 只尝试第一个返回的地址
+            target_addr_info = addr_info_list[0]
+            af, socktype, proto, canonname, sa = target_addr_info
+            
+            start_time = time.time()
+            with socket.socket(af, socktype, proto) as sock:
+                sock.settimeout(timeout)
+                sock.connect(sa)
+                end_time = time.time()
+                return (end_time - start_time) * 1000  # 返回毫秒
+        except (socket.error, socket.timeout, OverflowError, OSError): # OSError for getaddrinfo fails
+            return float('inf')
+        except Exception:
+            # 其他未知错误
+            return float('inf')
+
+    @staticmethod
+    def _parse_node_link(link):
+        """(新增) 解析节点链接，返回 (address, port) 或 None"""
+        try:
+            if link.startswith("vmess://"):
+                try:
+                    # 1. VMess
+                    decoded = base64.b64decode(link[8:]).decode('utf-8')
+                    data = json.loads(decoded)
+                    return data.get('add'), data.get('port')
+                except Exception:
+                    return None # 解码或JSON解析失败
+
+            elif link.startswith(("vless://", "trojan://")):
+                # 2. VLess / Trojan (标准URL格式)
+                parsed_url = urllib.parse.urlparse(link)
+                # hostname 会自动处理 [::1] 为 ::1
+                return parsed_url.hostname, parsed_url.port
+
+            elif link.startswith("ss://"):
+                # 3. SS (Shadowsocks)
+                try:
+                    parsed_url = urllib.parse.urlparse(link)
+                    # 尝试1: URL 格式 (e.g., ss://method:pass@host:port#tag)
+                    if parsed_url.username and parsed_url.hostname and parsed_url.port:
+                        return parsed_url.hostname, parsed_url.port
+
+                    # 尝试2: Base64 格式 (ss://Base64String#Tag)
+                    # 此时 base64 字符串会被错误地解析为 netloc
+                    main_part = parsed_url.netloc
+                    
+                    if main_part:
+                        # 需要补全 padding
+                        padding = '=' * (-len(main_part) % 4)
+                        decoded = base64.b64decode(main_part + padding).decode('utf-8')
+                        # 格式: method:password@server:port
+                        at_parts = decoded.split('@')
+                        if len(at_parts) == 2:
+                            server_part = at_parts[1]
+                            host_port = server_part.rsplit(':', 1) # 从右侧分割，以支持 IPv6 [host]:port
+                            if len(host_port) == 2:
+                                host = host_port[0].strip('[]') # 去除 IPv6 方括号
+                                return host, host_port[1]
+                except Exception:
+                    return None # 解析失败
+                return None # 两种格式都未匹配
+
+            elif link.startswith("ssr://"):
+                # 4. SSR (ShadowsocksR)
+                try:
+                    # SSR 使用 URL-safe Base64
+                    decoded_part = link[6:]
+                    padding = '=' * (-len(decoded_part) % 4)
+                    decoded = base64.urlsafe_b64decode(decoded_part + padding).decode('utf-8')
+                    # 格式: server:port:protocol:method:obfs:password_base64/?...
+                    # SSR 格式的 server 字段不支持 IPv6
+                    main_parts = decoded.split(':')
+                    if len(main_parts) >= 2:
+                        return main_parts[0], main_parts[1]
+                except Exception:
+                    return None # 解码失败
+            
+            return None # 未知或不支持的协议 (e.g., tuic, hysteria)
+        
+        except Exception:
+            return None # 兜底
+
 # --- 图形化界面 (GUI) ---
 class AggregatorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("代理聚合器 v5.0.0")
-        self.root.geometry("850x850")
+        self.root.title("代理聚合器 v5.1.0 (带测速)")
+        self.root.geometry("850x900") # (修改) 增加高度以容纳测速框
         
         self.internal_github_token = "github_pat_"
         self.gui_queue = queue.Queue()
@@ -277,7 +378,8 @@ class AggregatorApp:
     def _setup_ui(self):
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill="both", expand=True)
-        main_frame.columnconfigure(0, weight=1); main_frame.rowconfigure(4, weight=1); main_frame.rowconfigure(5, weight=1)
+        # (修改) 调整行权重以适应新布局
+        main_frame.columnconfigure(0, weight=1); main_frame.rowconfigure(5, weight=1); main_frame.rowconfigure(6, weight=1)
 
         search_frame = ttk.LabelFrame(main_frame, text="在线搜索订阅", padding="10")
         search_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -318,12 +420,34 @@ class AggregatorApp:
         self.proxy_entry = ttk.Entry(proxy_line_frame); self.proxy_entry.pack(side='left', fill='x', expand=True); self.proxy_entry.insert(tk.END, "http://127.0.0.1:10809")
 
         control_frame = ttk.Frame(main_frame); control_frame.grid(row=3, column=0, pady=10)
-        self.run_button = ttk.Button(control_frame, text="执行聚合处理", command=self.run_processing_thread); self.run_button.pack()
+        self.run_button = ttk.Button(control_frame, text="执行聚合处理 (含测速)", command=self.run_processing_thread); self.run_button.pack()
 
-        log_frame = ttk.LabelFrame(main_frame, text="处理日志", padding="5"); log_frame.grid(row=4, column=0, sticky="nsew", pady=5)
+        # --- (新增) 测速设置 ---
+        speed_test_frame = ttk.LabelFrame(main_frame, text="测速与筛选", padding="10")
+        speed_test_frame.grid(row=4, column=0, sticky="ew", pady=(0, 5))
+        speed_test_frame.columnconfigure(1, weight=1)
+
+        self.speed_test_enabled = tk.BooleanVar(value=True) # 默认开启
+        self.speed_test_checkbox = ttk.Checkbutton(speed_test_frame, text="启用测速 (仅支持 Vmess/Vless/Trojan/SS/SSR)", variable=self.speed_test_enabled)
+        self.speed_test_checkbox.grid(row=0, column=0, columnspan=3, sticky='w', pady=(0, 5))
+
+        ttk.Label(speed_test_frame, text="测速超时 (秒):").grid(row=1, column=0, padx=(0, 10), sticky='w')
+        self.timeout_spinbox = ttk.Spinbox(speed_test_frame, from_=1, to=10, width=5)
+        self.timeout_spinbox.set(2)
+        self.timeout_spinbox.grid(row=1, column=1, sticky='w')
+
+        ttk.Label(speed_test_frame, text="并发数 (搜索/测速):").grid(row=2, column=0, padx=(0, 10), sticky='w')
+        self.concurrency_spinbox = ttk.Spinbox(speed_test_frame, from_=10, to=200, increment=10, width=5)
+        self.concurrency_spinbox.set(50)
+        self.concurrency_spinbox.grid(row=2, column=1, sticky='w')
+        # --- 测速设置结束 ---
+
+        # (修改) 行索引 +1
+        log_frame = ttk.LabelFrame(main_frame, text="处理日志", padding="5"); log_frame.grid(row=5, column=0, sticky="nsew", pady=5)
         self.log_text = scrolledtext.ScrolledText(log_frame, state='disabled', wrap=tk.WORD); self.log_text.pack(fill='both', expand=True)
         
-        result_frame = ttk.LabelFrame(main_frame, text="结果预览 (只显示前10条)", padding="5"); result_frame.grid(row=5, column=0, sticky="nsew", pady=5)
+        # (修改) 行索引 +1
+        result_frame = ttk.LabelFrame(main_frame, text="结果预览 (只显示前10条)", padding="5"); result_frame.grid(row=6, column=0, sticky="nsew", pady=5)
         result_header = ttk.Frame(result_frame); result_header.pack(fill='x', anchor='n', pady=(0, 5))
         self.save_button = ttk.Button(result_header, text="保存为文件...", command=self.save_result_to_file); self.save_button.pack(side='right', anchor='ne')
         ttk.Label(result_header, text="通用订阅格式 (Base64)").pack(side='left', anchor='nw')
@@ -414,7 +538,8 @@ class AggregatorApp:
         self._append_log(f"--- {task_name}任务开始 ---")
         
         self.stop_task_event.clear()
-        self.executor = ThreadPoolExecutor(max_workers=20)
+        # (修改) Executor 在 worker 线程中根据 GUI 设置初始化
+        # self.executor = ThreadPoolExecutor(max_workers=20) 
         
         thread = threading.Thread(target=target_func, daemon=True)
         thread.start()
@@ -437,7 +562,9 @@ class AggregatorApp:
         self._append_log("\n正在发送中止信号... 请等待当前线程结束。")
         self.stop_task_event.set()
         if self.executor:
-            self.executor.shutdown(wait=False, cancel_futures=True if sys.version_info >= (3, 9) else False)
+            # (修改) 增加 cancel_futures=True 以尽快停止 (需要 Python 3.9+)
+            cancel_futures = sys.version_info >= (3, 9)
+            self.executor.shutdown(wait=False, cancel_futures=cancel_futures)
         self.stop_task_button.config(state='disabled')
 
     def _search_worker(self):
@@ -454,6 +581,11 @@ class AggregatorApp:
             queries = [q.strip() for q in self.search_query_entry.get().strip().split(',') if q.strip()]
             pages = int(self.pages_spinbox.get())
             proxy = self.proxy_entry.get().strip() if self.proxy_enabled.get() else None
+            
+            # (新增) 读取并发数
+            concurrency = int(self.concurrency_spinbox.get())
+            # (修改) 根据 GUI 设置初始化 Executor
+            self.executor = ThreadPoolExecutor(max_workers=concurrency)
 
             if not queries:
                 self.gui_queue.put(('log', "错误：请至少输入一个搜索关键字。")); return
@@ -472,6 +604,11 @@ class AggregatorApp:
             input_lines = [u.strip() for u in self.sub_links_text.get('1.0', tk.END).strip().split('\n') if u.strip()]
             proxy = self.proxy_entry.get().strip() if self.proxy_enabled.get() else None
             
+            # (新增) 获取测速设置
+            enable_speed_test = self.speed_test_enabled.get()
+            test_timeout = int(self.timeout_spinbox.get())
+            test_concurrency = int(self.concurrency_spinbox.get())
+            
             direct_nodes = {line for line in input_lines if line.startswith(NexavorUtils.NODE_PROTOCOLS)}
             http_links = [line for line in input_lines if line.startswith(('http://', 'https://'))]
 
@@ -484,6 +621,11 @@ class AggregatorApp:
 
             if http_links:
                 self.gui_queue.put(('log', f"开始并发下载 {len(http_links)} 个订阅链接..."))
+                
+                # (修改) 根据 GUI 设置初始化 Executor
+                if self.executor: self.executor.shutdown(wait=False) # 关闭旧的
+                self.executor = ThreadPoolExecutor(max_workers=test_concurrency)
+                
                 future_to_url = {self.executor.submit(self.aggregator.fetch_and_parse_url, url, proxy): url for url in http_links}
                 
                 for i, future in enumerate(as_completed(future_to_url)):
@@ -499,13 +641,88 @@ class AggregatorApp:
             
             if self.stop_task_event.is_set(): return
 
-            self.gui_queue.put(('log', "\n所有下载任务完成。开始生成最终结果..."))
-            if not unique_nodes:
-                self.gui_queue.put(('log', "未找到任何有效节点。")); return
+            self.gui_queue.put(('log', f"\n下载完成。总共找到 {len(unique_nodes)} 个唯一节点。"))
             
-            self.gui_queue.put(('log', f"总共找到 {len(unique_nodes)} 个唯一节点。正在进行Base64编码..."))
+            final_node_list = sorted(list(unique_nodes))
+
+            # --- (新增) 测速逻辑 ---
+            if enable_speed_test and final_node_list:
+                self.gui_queue.put(('log', f"=== 开始测速（并发: {test_concurrency}, 超时: {test_timeout}s） ==="))
+                
+                nodes_to_test = []
+                parsing_errors = 0
+                unsupported = 0
+                
+                self.gui_queue.put(('log', "步骤 1: 正在解析节点链接..."))
+                for node_link in final_node_list:
+                    if self.stop_task_event.is_set(): return
+                    parsed = self.aggregator._parse_node_link(node_link)
+                    if parsed:
+                        addr, port = parsed
+                        if addr and port:
+                            nodes_to_test.append({'link': node_link, 'addr': addr, 'port': port})
+                        else:
+                            parsing_errors += 1
+                    else:
+                        # Hysteria, Tuic 等协议 parse_node_link 返回 None
+                        unsupported += 1
+                
+                self.gui_queue.put(('log', f"解析完成: {len(nodes_to_test)} 个可测速, {unsupported} 个不支持, {parsing_errors} 个解析失败。"))
+                
+                if not nodes_to_test:
+                    self.gui_queue.put(('log', "没有可测速的节点。"))
+                    return # 结束任务
+
+                self.gui_queue.put(('log', f"步骤 2: 开始并发 TCP Ping {len(nodes_to_test)} 个节点..."))
+                
+                # 确保 executor 存在且并发数正确
+                if self.executor is None: # 如果之前没有 http_links, executor 未初始化
+                     self.executor = ThreadPoolExecutor(max_workers=test_concurrency)
+                
+                future_to_node = {
+                    self.executor.submit(self.aggregator._tcp_ping, node['addr'], node['port'], test_timeout): node['link']
+                    for node in nodes_to_test
+                }
+
+                results = [] # (delay, link)
+                tested_count = 0
+                for future in as_completed(future_to_node):
+                    if self.stop_task_event.is_set(): break
+                    link = future_to_node[future]
+                    try:
+                        delay = future.result()
+                        if delay != float('inf'):
+                            results.append((delay, link))
+                    except Exception as e:
+                        self.gui_queue.put(('log', f"测速 {link[:30]}... 出错: {e}"))
+                    
+                    tested_count += 1
+                    if tested_count % 20 == 0 or tested_count == len(nodes_to_test):
+                         self.gui_queue.put(('log', f"测速进度: {tested_count}/{len(nodes_to_test)} | 存活: {len(results)}"))
+
+                if self.stop_task_event.is_set(): return
+
+                self.gui_queue.put(('log', "\n测速完成。正在按延迟排序..."))
+                
+                # 按延迟排序
+                results.sort(key=lambda x: x[0])
+                final_node_list = [link for delay, link in results]
+                
+                if not final_node_list:
+                    self.gui_queue.put(('log', "未找到任何测速成功的节点。")); return
+                
+                self.gui_queue.put(('log', f"筛选完毕！共 {len(final_node_list)} 个存活节点。最快延迟: {results[0][0]:.2f} ms"))
+
+            # --- 测速逻辑结束 ---
+
+            elif not final_node_list:
+                 self.gui_queue.put(('log', "未找到任何有效节点。")); return
+            else:
+                self.gui_queue.put(('log', "测速未启用。按默认顺序生成结果..."))
             
-            final_text = "\n".join(sorted(list(unique_nodes)))
+            self.gui_queue.put((('log', f"总共 {len(final_node_list)} 个节点。正在进行Base64编码...")))
+            
+            final_text = "\n".join(final_node_list)
             
             self.gui_queue.put(('log', f"用于编码的文本前50个字符: {repr(final_text[:50])}"))
             
