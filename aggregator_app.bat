@@ -1,1 +1,1 @@
-pyinstaller --onefile --windowed --icon=aggregator_app.ico --name="代理聚合器" aggregator_app.py
+pyinstaller --onefile --windowed --icon=aggregator_app.ico --name="代理聚合器" --collect-data certifi --hidden-import=socks --hidden-import=pysocks --hidden-import=futures aggregator_app.py
