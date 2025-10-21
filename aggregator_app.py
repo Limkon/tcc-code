@@ -341,10 +341,18 @@ class RealProxyAggregator:
     def __init__(self, gui_queue):
         self.gui_queue = gui_queue
         
-        # (修改) 查找 Sing-box 核心
-        if getattr(sys, 'frozen', False):
+        # (修改) 查找 Sing-box 核心 (兼容 .py 和 PyInstaller --onefile/--onedir)
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            # 场景1: 运行在 PyInstaller --onefile 打包环境中
+            # sys._MEIPASS 指向解压后的临时文件夹
+            base_path = sys._MEIPASS
+        elif getattr(sys, 'frozen', False):
+            # 场景2: 运行在 PyInstaller --onedir (多文件) 打包环境中
+            # sys.executable 是打包后的 exe 文件的路径
             base_path = os.path.dirname(sys.executable)
         else:
+            # 场景3: 运行在普通的 .py 脚本环境中 (与程序同一目录)
+            # __file__ 是 .py 脚本的路径
             base_path = os.path.dirname(os.path.abspath(__file__))
 
         self.singbox_path = os.path.join(base_path, self.SINGBOX_EXECUTABLE)
