@@ -139,7 +139,7 @@ BOOL LoadConfig(const WCHAR* configPath) {
     if (hFind == INVALID_HANDLE_VALUE) {
         FILE* f_create = _wfopen(configPath, L"w,ccs=UTF-16LE");
         if (!f_create) {
-            MessageBoxW(NULL, L"致命错误：无法创建配置文件！请检查程序权限。\n尝试将程序放在桌面或“文档”等有写入权限的目录。\n错误码: %lu", L"配置文件创建失败", MB_OK | MB_ICONERROR);
+            MessageBoxW(NULL, L"致命错误：无法创建配置文件！请检查程序权限。\n尝试将程序放在桌面或“文档”等有写入权限的目录。\n错误码: %lu", L"配置文件创建失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
             return FALSE;
         }
         fwprintf(f_create, L"[%ls]\n", CONFIG_SECTION_NAME);
@@ -227,7 +227,7 @@ void InitiateShutdown(UINT countdown) {
     SetTimer(g_hHiddenWindow, IDT_TIMER_SHUTDOWN_COUNTDOWN, countdown * 1000, NULL);
     WCHAR szMessage[256];
     swprintf_s(szMessage, ARRAYSIZE(szMessage), L"系统将在 %d 秒后关机。请保存您的工作。", countdown);
-    MessageBoxW(g_hMainWindow, szMessage, L"关机提示", MB_OK | MB_ICONWARNING);
+    MessageBoxW(g_hMainWindow, szMessage, L"关机提示", MB_OK | MB_ICONWARNING | MB_TOPMOST);
 }
 
 void StopShutdownCountdown() {
@@ -255,7 +255,7 @@ void SetShutdownTimers() {
     if (g_config.enable_idle_shutdown) {
         if (g_config.idle_minutes <= 0) {
             g_config.enable_idle_shutdown = FALSE;
-            MessageBoxW(NULL, L"闲置时间无效，已禁用闲置关机！", L"错误", MB_OK | MB_ICONERROR);
+            MessageBoxW(NULL, L"闲置时间无效，已禁用闲置关机！", L"错误", MB_OK | MB_ICONERROR | MB_TOPMOST);
         } else {
             SetTimer(g_hHiddenWindow, IDT_TIMER_CHECK_IDLE, 30 * 1000, NULL);
         }
@@ -265,7 +265,7 @@ void SetShutdownTimers() {
         if (g_config.shutdown_hour < 0 || g_config.shutdown_hour > 23 ||
             g_config.shutdown_minute < 0 || g_config.shutdown_minute > 59) {
             g_config.enable_timed_shutdown = FALSE;
-            MessageBoxW(NULL, L"定时关机时间无效，已禁用定时关机！", L"错误", MB_OK | MB_ICONERROR);
+            MessageBoxW(NULL, L"定时关机时间无效，已禁用定时关机！", L"错误", MB_OK | MB_ICONERROR | MB_TOPMOST);
         } else {
             // 在重新设置定时器之前，重新评估 g_shutdown_executed_today 的状态
             SYSTEMTIME st_current_for_eval;
@@ -419,7 +419,7 @@ LRESULT CALLBACK MainWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     }
 
                     if (!immediate_shutdown_triggered_on_save) {
-                        MessageBoxW(hWnd, L"设置已保存并应用！", L"提示", MB_OK | MB_ICONINFORMATION);
+                        MessageBoxW(hWnd, L"设置已保存并应用！", L"提示", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
                     } else {
                         // 如果已触发关机，InitiateShutdown 会显示提示框，此处无需再显示。
                         // 程序很快会退出。
@@ -503,7 +503,7 @@ LRESULT CALLBACK HiddenWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
                     CloseHandle(pi.hProcess);
                     CloseHandle(pi.hThread);
                 } else {
-                    MessageBoxW(NULL, L"执行关机命令失败！请检查权限。", L"关机错误", MB_OK | MB_ICONERROR);
+                    MessageBoxW(NULL, L"执行关机命令失败！请检查权限。", L"关机错误", MB_OK | MB_ICONERROR | MB_TOPMOST);
                 }
                 PostQuitMessage(0);
             }
@@ -535,11 +535,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     if (p != NULL) {
         *p = L'\0';
         if (!SetCurrentDirectoryW(exeDir)) {
-            MessageBoxW(NULL, L"致命错误：无法设置程序工作目录！请检查程序权限或放置位置。", L"程序启动失败", MB_OK | MB_ICONERROR);
+            MessageBoxW(NULL, L"致命错误：无法设置程序工作目录！请检查程序权限或放置位置。", L"程序启动失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
             return 1;
         }
     } else {
-        MessageBoxW(NULL, L"致命错误：无法确定程序所在目录！请将程序放置在有效位置。", L"程序启动失败", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, L"致命错误：无法确定程序所在目录！请将程序放置在有效位置。", L"程序启动失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
         return 1;
     }
 
@@ -553,7 +553,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
                              L"致命错误：程序所在目录无写入权限！\n\n"
                              L"请将本程序 (ShutdownTray.exe) 移动到桌面、文档、下载等您拥有完全写入权限的目录，然后再次运行。\n"
                              L"错误码: %lu",
-                             L"权限不足，无法启动", MB_OK | MB_ICONERROR);
+                             L"权限不足，无法启动", MB_OK | MB_ICONERROR | MB_TOPMOST);
         return 1;
     }
     fclose(testConfigFile);
@@ -610,18 +610,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCE(IDI_APPICON));
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     if (!RegisterClassW(&wc)) {
-        MessageBoxW(NULL, L"致命错误：无法注册主窗口类！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, L"致命错误：无法注册主窗口类！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
         CleanupGetLastInputInfo();
         if (g_hMutex) CloseHandle(g_hMutex);
         return 1;
     }
+
+
 
     wc.lpfnWndProc = HiddenWindowProc;
     wc.lpszClassName = HIDDEN_WINDOW_CLASS;
     wc.hIcon = NULL;
     wc.hbrBackground = NULL;
     if (!RegisterClassW(&wc)) {
-        MessageBoxW(NULL, L"致命错误：无法注册隐藏窗口类！程序将无法接收定时器消息。", L"程序启动失败", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, L"致命错误：无法注册隐藏窗口类！程序将无法接收定时器消息。", L"程序启动失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
         CleanupGetLastInputInfo();
         if (g_hMutex) CloseHandle(g_hMutex);
         return 1;
@@ -630,7 +632,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     // 创建隐藏窗口
     g_hHiddenWindow = CreateWindowExW(0, HIDDEN_WINDOW_CLASS, L"ShutdownAssistantHiddenWindow", 0, 0, 0, 0, 0, NULL, NULL, hInstance, NULL);
     if (!g_hHiddenWindow) {
-        MessageBoxW(NULL, L"致命错误：无法创建隐藏窗口！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, L"致命错误：无法创建隐藏窗口！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
         CleanupGetLastInputInfo();
         if (g_hMutex) CloseHandle(g_hMutex);
         return 1;
@@ -645,7 +647,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
         NULL, NULL, hInstance, NULL);
 
     if (!g_hMainWindow) {
-        MessageBoxW(NULL, L"致命错误：无法创建主界面窗口！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, L"致命错误：无法创建主界面窗口！程序将无法运行。", L"程序启动失败", MB_OK | MB_ICONERROR | MB_TOPMOST);
         DestroyWindow(g_hHiddenWindow);
         CleanupGetLastInputInfo();
         if (g_hMutex) CloseHandle(g_hMutex);
