@@ -333,10 +333,12 @@ class DynamicSubscriptionFinder:
                  url_name = future_to_url.get(future, "未知URL")
                  self._log(f"一个文件提取任务失败 ({url_name[:50]}...): {e}")
 
-# --- 后端处理核心 (集成测速) ---
+# --- (v6.1.10) 后端处理核心 (集成测速) ---
 class RealProxyAggregator:
     # (修改) Sing-box 核心可执行文件名
     SINGBOX_EXECUTABLE = "sing-box.exe" if platform.system() == "Windows" else "sing-box"
+    # (新增) Sing-box 测速起始端口
+    SINGBOX_BASE_PORT = 10900
     
     def __init__(self, gui_queue):
         self.gui_queue = gui_queue
@@ -513,362 +515,358 @@ class RealProxyAggregator:
         except Exception:
             return None 
 
-    # (修改) 全新的 Sing-box 解析器 (v6.1.9 - 移除 VLESS/Vmess 的默认 ALPN)
+    # --- (重构) Sing-box 解析器 ---
+    
+    # (新增) 内部辅助函数：检查 IP 地址
+    @staticmethod
+    def _is_ip_address(s):
+        """辅助函数: 检查字符串是否为 IP 地址 (v4 or v6)"""
+        if not s: return False
+        # 检查 IPv4
+        if '.' in s:
+            try:
+                socket.inet_pton(socket.AF_INET, s)
+                return True
+            except socket.error:
+                pass
+        # 检查 IPv6 (需要包含 ':')
+        if ':' in s:
+            try:
+                # 移除潜在的方括号
+                s_no_brackets = s.strip('[]')
+                socket.inet_pton(socket.AF_INET6, s_no_brackets)
+                return True
+            except socket.error:
+                pass
+        return False
+
+    # (新增) Vmess 解析器
+    @staticmethod
+    def _parse_singbox_vmess(link, params, fragment):
+        try:
+            b64_part = link[8:]
+            b64_part += '=' * (-len(b64_part) % 4)
+            config = json.loads(base64.b64decode(b64_part).decode('utf-8', errors='ignore'))
+        except Exception: 
+            return None # Vmess 格式无效
+
+        outbound = {
+            "type": "vmess",
+            "tag": fragment or f"vmess_{config.get('add', '')}_{config.get('port', 443)}",
+            "server": config.get("add", ""),
+            "server_port": int(config.get("port", 443)),
+            "uuid": config.get("id", ""),
+            "security": config.get("scy", "auto"),
+            "alter_id": int(config.get("aid", 0)),
+        }
+        if params.get("packetEncoding"):
+            outbound["packet_encoding"] = params.get("packetEncoding")
+
+        net = config.get("net", "tcp")
+        tls_enabled = config.get("tls", "none") == "tls"
+        
+        if tls_enabled:
+            tls_config = {"enabled": True}
+            server_name = config.get("sni", config.get("host", ""))
+            tls_config["insecure"] = params.get("allowInsecure") == "1"
+            if server_name and not RealProxyAggregator._is_ip_address(server_name):
+                 tls_config["server_name"] = server_name
+            
+            alpn_str = params.get("alpn")
+            if alpn_str:
+                 tls_config["alpn"] = [s.strip() for s in alpn_str.split(',')]
+            
+            outbound["tls"] = tls_config
+
+        if net == "ws":
+            outbound["transport"] = {
+                "type": "ws",
+                "path": config.get("path", "/"),
+                "headers": {"Host": config.get("host", config.get("add", ""))}
+            }
+        elif net == "grpc":
+            outbound["transport"] = {
+                "type": "grpc",
+                "service_name": config.get("path", "")
+            }
+        return outbound
+
+    # (新增) Vless/Trojan 解析器
+    @staticmethod
+    def _parse_singbox_vless_trojan(parsed_url, params, fragment):
+        protocol = parsed_url.scheme
+        hostname = parsed_url.hostname 
+        port = parsed_url.port
+        
+        outbound = {
+            "type": protocol,
+            "tag": fragment or f"{protocol}_{hostname}_{port}",
+            "server": hostname,
+            "server_port": port,
+        }
+        
+        if protocol == "vless":
+            outbound["uuid"] = parsed_url.username
+            if params.get("flow"): 
+                outbound["flow"] = params.get("flow") 
+        else: # trojan
+            outbound["password"] = parsed_url.username
+
+        security_type = params.get("security", "none") 
+        tls_config = None 
+        
+        is_tls_enabled = False
+        if protocol == "vless" and security_type in ("tls", "xtls", "reality"):
+            is_tls_enabled = True
+        elif protocol == "trojan" and security_type != "none": 
+            is_tls_enabled = True
+
+        if is_tls_enabled:
+            tls_config = {"enabled": True}
+            tls_config["insecure"] = params.get("allowInsecure") == "1" 
+            
+            sni = params.get("sni")
+            server_name_to_use = None
+            
+            if sni and not RealProxyAggregator._is_ip_address(sni):
+                server_name_to_use = sni
+            elif not sni and hostname and not RealProxyAggregator._is_ip_address(hostname):
+                 server_name_to_use = hostname
+            
+            if server_name_to_use:
+                tls_config["server_name"] = server_name_to_use
+
+            alpn_str = params.get("alpn")
+            if alpn_str:
+                 tls_config["alpn"] = [s.strip() for s in alpn_str.split(',')]
+
+            if protocol == "vless" and security_type == "reality":
+                tls_config["reality"] = {"enabled": True}
+                if params.get("pbk"): tls_config["reality"]["public_key"] = params.get("pbk")
+                if params.get("sid"): tls_config["reality"]["short_id"] = params.get("sid")
+                
+            utls_fp = params.get("fp")
+            if utls_fp:
+                 tls_config["utls"] = {"enabled": True, "fingerprint": utls_fp}
+
+            if tls_config:
+                outbound["tls"] = tls_config
+
+        transport_type = params.get("type", "tcp")
+        if transport_type == "ws":
+            outbound["transport"] = {
+                "type": "ws",
+                "path": params.get("path", "/"),
+                "headers": {"Host": params.get("host", hostname)}
+            }
+        elif transport_type == "grpc":
+            outbound["transport"] = {
+                "type": "grpc",
+                "service_name": params.get("serviceName", "") 
+            }
+        return outbound
+
+    # (新增) Shadowsocks 解析器
+    @staticmethod
+    def _parse_singbox_ss(parsed_url, params, fragment):
+        method, password, address, port = None, None, None, None
+        
+        if '@' in parsed_url.netloc and ':' in parsed_url.netloc.split('@', 1)[1]:
+            user_info_b64, host_port = parsed_url.netloc.split('@', 1)
+            host, port_str = host_port.rsplit(':', 1)
+            address = host.strip('[]')
+            port = int(port_str)
+            try:
+                user_info_b64 += '=' * (-len(user_info_b64) % 4)
+                decoded_user = base64.urlsafe_b64decode(user_info_b64).decode('utf-8', errors='ignore')
+                method, password = decoded_user.split(':', 1)
+            except Exception: return None
+
+        elif parsed_url.username and parsed_url.password and parsed_url.hostname and parsed_url.port:
+             method = urllib.parse.unquote(parsed_url.username)
+             password = urllib.parse.unquote(parsed_url.password)
+             address = parsed_url.hostname
+             port = parsed_url.port
+
+        elif not parsed_url.path and '@' not in parsed_url.netloc and ':' not in parsed_url.netloc:
+             try:
+                b64_part = parsed_url.netloc
+                b64_part += '=' * (-len(b64_part) % 4)
+                decoded_full = base64.urlsafe_b64decode(b64_part).decode('utf-8', errors='ignore')
+                user_pass, host_port = decoded_full.split('@', 1)
+                method, password = user_pass.split(':', 1)
+                address, port_str = host_port.rsplit(':', 1)
+                address = address.strip('[]')
+                port = int(port_str)
+             except Exception: return None
+        else: 
+            return None 
+
+        supported_methods = [
+            "aes-256-gcm", "aes-128-gcm", "chacha20-ietf-poly1305",
+            "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
+            "2022-blake3-chacha20-poly1305"
+        ]
+        method_lower = method.lower()
+        if method_lower == "chacha20-poly1305": method = "chacha20-ietf-poly1305"
+        if method not in supported_methods: return None 
+
+        outbound = {
+            "type": "shadowsocks",
+            "tag": fragment or f"ss_{address}_{port}",
+            "server": address,
+            "server_port": port,
+            "method": method,
+            "password": password
+        }
+
+        plugin_param = params.get("plugin")
+        if plugin_param:
+             try:
+                plugin_parts = plugin_param.split(';')
+                plugin_name = plugin_parts[0].lower().strip()
+                plugin_opts = {}
+                for part in plugin_parts[1:]:
+                    part = part.strip()
+                    if not part: continue
+                    if '=' in part:
+                        key, value = part.split('=', 1)
+                        plugin_opts[key.strip()] = value.strip()
+                    else:
+                         plugin_opts[part.strip()] = True 
+
+                if plugin_name == "v2ray-plugin" and plugin_opts.get("mode") == "websocket":
+                     ws_path = plugin_opts.get("path", "/")
+                     ws_host = plugin_opts.get("host", address)
+                     outbound["transport"] = {
+                         "type": "ws",
+                         "path": ws_path,
+                         "headers": {"Host": ws_host}
+                     }
+                     if plugin_opts.get("tls") is True or plugin_opts.get("tls", "").lower() == "true":
+                          tls_config = {"enabled": True}
+                          sni = ws_host
+                          if sni and not RealProxyAggregator._is_ip_address(sni):
+                               tls_config["server_name"] = sni
+                          tls_config["insecure"] = plugin_opts.get("insecure") is True or plugin_opts.get("insecure", "").lower() == "true"
+                          outbound["tls"] = tls_config
+             except Exception:
+                  pass # 忽略插件解析失败
+        return outbound
+
+    # (新增) Hysteria v1 解析器
+    @staticmethod
+    def _parse_singbox_hysteria(parsed_url, params, fragment):
+         hostname = parsed_url.hostname
+         port = parsed_url.port
+         auth = params.get("auth") or parsed_url.username or parsed_url.password
+         sni_host = params.get("peer") or hostname
+         insecure = params.get("insecure", "0") == "1"
+         up_mbps_str = params.get("upmbps", "10")
+         down_mbps_str = params.get("downmbps", "50")
+         recv_window_conn = params.get("recv_window_conn") 
+         recv_window = params.get("recv_window")        
+
+         if not auth: return None 
+
+         try:
+             up_mbps = int(up_mbps_str)
+             down_mbps = int(down_mbps_str)
+         except ValueError:
+             return None 
+
+         outbound = {
+             "type": "hysteria",
+             "tag": fragment or f"hy_{hostname}_{port}",
+             "server": hostname,
+             "server_port": port,
+             "up_mbps": up_mbps,
+             "down_mbps": down_mbps,
+             "auth_str": auth,
+             "tls": {
+                 "enabled": True, 
+                 "insecure": insecure,
+             }
+         }
+         if sni_host and not RealProxyAggregator._is_ip_address(sni_host):
+             outbound["tls"]["server_name"] = sni_host
+         if recv_window_conn:
+             try: outbound["recv_window_conn"] = int(recv_window_conn)
+             except ValueError: pass
+         if recv_window:
+             try: outbound["recv_window"] = int(recv_window)
+             except ValueError: pass
+         return outbound
+
+    # (新增) Hysteria v2 解析器
+    @staticmethod
+    def _parse_singbox_hysteria2(parsed_url, params, fragment):
+         hostname = parsed_url.hostname
+         port = parsed_url.port
+         password = parsed_url.username or parsed_url.password
+         sni_host = params.get("sni") or hostname
+         insecure = params.get("insecure", "0") == "1"
+
+         if not password: return None 
+
+         outbound = {
+             "type": "hysteria2",
+             "tag": fragment or f"hy2_{hostname}_{port}",
+             "server": hostname,
+             "server_port": port,
+             "password": password,
+             "tls": {
+                 "enabled": True, 
+                 "insecure": insecure,
+             }
+         }
+         if sni_host and not RealProxyAggregator._is_ip_address(sni_host):
+             outbound["tls"]["server_name"] = sni_host
+         return outbound
+
+    # (修改) 全新的 Sing-box 解析器 (v6.1.10 - 重构为调度器)
     @staticmethod
     def _parse_node_link_for_singbox(link):
-        """专用于 Sing-box 的全新高级解析器 (v6.1.9)"""
+        """专用于 Sing-box 的全新高级解析器 (v6.1.10 - 调度器)"""
         try:
-            # 辅助函数: 检查字符串是否为 IP 地址 (v4 or v6)
-            def is_ip_address(s):
-                if not s: return False
-                # 检查 IPv4
-                if '.' in s:
-                    try:
-                        socket.inet_pton(socket.AF_INET, s)
-                        return True
-                    except socket.error:
-                        pass
-                # 检查 IPv6 (需要包含 ':')
-                if ':' in s:
-                    try:
-                        # 移除潜在的方括号
-                        s_no_brackets = s.strip('[]')
-                        socket.inet_pton(socket.AF_INET6, s_no_brackets)
-                        return True
-                    except socket.error:
-                        pass
-                return False
-
-
-            outbound = {}
+            outbound = None
             parsed_url = urllib.parse.urlparse(link)
-            # 使用 parse_qs 保留重复参数（虽然这里可能不需要）
-            params = urllib.parse.parse_qs(parsed_url.query)
+            # 使用 parse_qs 保留重复参数
+            params_list = urllib.parse.parse_qs(parsed_url.query)
             # 将列表值转换为单个值（取第一个）
-            params = {k: v[0] for k, v in params.items()}
+            params = {k: v[0] for k, v in params_list.items()}
             fragment = parsed_url.fragment # 用于 tag/name
 
             if link.startswith("vmess://"):
-                try:
-                    b64_part = link[8:]
-                    b64_part += '=' * (-len(b64_part) % 4)
-                    config = json.loads(base64.b64decode(b64_part).decode('utf-8', errors='ignore'))
-                except Exception: return None # Vmess 格式无效
-
-                outbound = {
-                    "type": "vmess",
-                    "tag": fragment or f"vmess_{config.get('add', '')}_{config.get('port', 443)}", # 更具信息量的 tag
-                    "server": config.get("add", ""),
-                    "server_port": int(config.get("port", 443)),
-                    "uuid": config.get("id", ""),
-                    "security": config.get("scy", "auto"),
-                    "alter_id": int(config.get("aid", 0)),
-                }
-                # Vmess 的 packet_encoding (来自查询参数)
-                if params.get("packetEncoding"):
-                    outbound["packet_encoding"] = params.get("packetEncoding")
-
-                net = config.get("net", "tcp")
-                tls_enabled = config.get("tls", "none") == "tls"
-                
-                if tls_enabled:
-                    tls_config = {"enabled": True}
-                    server_name = config.get("sni", config.get("host", ""))
-                    # (修正 v6.1.9) 处理 insecure
-                    tls_config["insecure"] = params.get("allowInsecure") == "1"
-                    if server_name and not is_ip_address(server_name):
-                         tls_config["server_name"] = server_name
-                    
-                    # (修正 v6.1.9) 仅在显式提供时添加 ALPN
-                    alpn_str = params.get("alpn")
-                    if alpn_str:
-                         tls_config["alpn"] = [s.strip() for s in alpn_str.split(',')]
-                    
-                    outbound["tls"] = tls_config
-
-                if net == "ws":
-                    outbound["transport"] = {
-                        "type": "ws",
-                        "path": config.get("path", "/"),
-                        "headers": {"Host": config.get("host", config.get("add", ""))}
-                    }
-                elif net == "grpc":
-                    outbound["transport"] = {
-                        "type": "grpc",
-                        "service_name": config.get("path", "")
-                    }
-                # TCP 不需要 transport 字段
-
+                outbound = RealProxyAggregator._parse_singbox_vmess(link, params, fragment)
+            
             elif link.startswith(("vless://", "trojan://")):
-                protocol = parsed_url.scheme
-                hostname = parsed_url.hostname 
-                port = parsed_url.port
-                
-                outbound = {
-                    "type": protocol,
-                    "tag": fragment or f"{protocol}_{hostname}_{port}", # 更具信息量的 tag
-                    "server": hostname,
-                    "server_port": port,
-                }
-                
-                if protocol == "vless":
-                    outbound["uuid"] = parsed_url.username
-                    if params.get("flow"): # 仅在指定时添加 flow
-                        outbound["flow"] = params.get("flow") 
-                else: # trojan
-                    outbound["password"] = parsed_url.username
-
-                security_type = params.get("security", "none") # VLESS 默认为 none
-                
-                # (修正 v6.1.9) 统一 TLS 处理，移除 VLESS 的默认 ALPN
-                tls_config = None # 初始化为 None
-                
-                # TLS/XTLS/Reality enabled check
-                is_tls_enabled = False
-                if protocol == "vless" and security_type in ("tls", "xtls", "reality"):
-                    is_tls_enabled = True
-                elif protocol == "trojan" and security_type != "none": # Trojan 默认 TLS
-                    is_tls_enabled = True
-
-                if is_tls_enabled:
-                    tls_config = {"enabled": True}
-                    tls_config["insecure"] = params.get("allowInsecure") == "1" # 统一 insecure
-                    
-                    sni = params.get("sni")
-                    server_name_to_use = None
-                    # 确定要使用的 SNI (参数优先，然后是 hostname (如果不是IP))
-                    if sni and not is_ip_address(sni):
-                        server_name_to_use = sni
-                    elif not sni and hostname and not is_ip_address(hostname):
-                         server_name_to_use = hostname
-                    
-                    if server_name_to_use:
-                        tls_config["server_name"] = server_name_to_use
-
-                    # (修正 v6.1.9) 仅在显式提供时添加 ALPN
-                    alpn_str = params.get("alpn")
-                    if alpn_str:
-                         tls_config["alpn"] = [s.strip() for s in alpn_str.split(',')]
-
-                    # Reality (仅 VLESS)
-                    if protocol == "vless" and security_type == "reality":
-                        tls_config["reality"] = {"enabled": True}
-                        if params.get("pbk"): tls_config["reality"]["public_key"] = params.get("pbk")
-                        if params.get("sid"): tls_config["reality"]["short_id"] = params.get("sid")
-                        
-                    # UTLS (VLESS & Trojan)
-                    utls_fp = params.get("fp")
-                    if utls_fp:
-                         tls_config["utls"] = {"enabled": True, "fingerprint": utls_fp}
-
-                # Add TLS config if created
-                if tls_config:
-                    outbound["tls"] = tls_config
-
-                transport_type = params.get("type", "tcp")
-                if transport_type == "ws":
-                    outbound["transport"] = {
-                        "type": "ws",
-                        "path": params.get("path", "/"),
-                        "headers": {"Host": params.get("host", hostname)}
-                    }
-                elif transport_type == "grpc":
-                    outbound["transport"] = {
-                        "type": "grpc",
-                        "service_name": params.get("serviceName", "") # Sing-box 使用 service_name
-                    }
+                outbound = RealProxyAggregator._parse_singbox_vless_trojan(parsed_url, params, fragment)
 
             elif link.startswith("ss://"):
-                method, password, address, port = None, None, None, None
-                plugin_opts_str = "" # 用于插件选项
+                outbound = RealProxyAggregator._parse_singbox_ss(parsed_url, params, fragment)
 
-                # 尝试 SIP002 格式: ss://base64(method:pass)@host:port?plugin=...#tag
-                if '@' in parsed_url.netloc and ':' in parsed_url.netloc.split('@', 1)[1]:
-                    user_info_b64, host_port = parsed_url.netloc.split('@', 1)
-                    host, port_str = host_port.rsplit(':', 1)
-                    address = host.strip('[]')
-                    port = int(port_str)
-                    try:
-                        user_info_b64 += '=' * (-len(user_info_b64) % 4)
-                        decoded_user = base64.urlsafe_b64decode(user_info_b64).decode('utf-8', errors='ignore')
-                        method, password = decoded_user.split(':', 1)
-                    except Exception: return None
-
-                # 尝试旧版格式: ss://method:pass@host:port?plugin=...#tag
-                elif parsed_url.username and parsed_url.password and parsed_url.hostname and parsed_url.port:
-                     method = urllib.parse.unquote(parsed_url.username)
-                     password = urllib.parse.unquote(parsed_url.password)
-                     address = parsed_url.hostname
-                     port = parsed_url.port
-
-                # 尝试原始 b64 全链接格式 ss://base64(method:pass@host:port)?plugin=...#tag
-                elif not parsed_url.path and '@' not in parsed_url.netloc and ':' not in parsed_url.netloc:
-                     try:
-                        b64_part = parsed_url.netloc
-                        b64_part += '=' * (-len(b64_part) % 4)
-                        decoded_full = base64.urlsafe_b64decode(b64_part).decode('utf-8', errors='ignore')
-                        user_pass, host_port = decoded_full.split('@', 1)
-                        method, password = user_pass.split(':', 1)
-                        address, port_str = host_port.rsplit(':', 1)
-                        address = address.strip('[]')
-                        port = int(port_str)
-                     except Exception: return None
-
-                else: return None # 无法识别的 SS 格式
-
-                supported_methods = [
-                    "aes-256-gcm", "aes-128-gcm", "chacha20-ietf-poly1305",
-                    "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
-                    "2022-blake3-chacha20-poly1305"
-                ]
-                method_lower = method.lower()
-                # 映射常用别名
-                if method_lower == "chacha20-poly1305": method = "chacha20-ietf-poly1305"
-
-                if method not in supported_methods: return None # 跳过不支持的加密
-
-                outbound = {
-                    "type": "shadowsocks",
-                    "tag": fragment or f"ss_{address}_{port}", # 更具信息量的 tag
-                    "server": address,
-                    "server_port": port,
-                    "method": method,
-                    "password": password
-                }
-
-                # (新增) 解析 SS 插件选项 (SIP003)
-                plugin_param = params.get("plugin")
-                if plugin_param:
-                     try:
-                        # 插件字符串格式: name;opt1=val1;opt2=val2...
-                        plugin_parts = plugin_param.split(';')
-                        plugin_name = plugin_parts[0].lower().strip() # 转小写比较, 去除空格
-                        plugin_opts = {}
-                        for part in plugin_parts[1:]:
-                            part = part.strip() # 去除部分周围的空格
-                            if not part: continue # 跳过空部分
-                            if '=' in part:
-                                key, value = part.split('=', 1)
-                                plugin_opts[key.strip()] = value.strip()
-                            else: # 处理标志，如 'tls'
-                                 plugin_opts[part.strip()] = True # 将标志视为 true
-
-                        if plugin_name == "v2ray-plugin" and plugin_opts.get("mode") == "websocket":
-                             ws_path = plugin_opts.get("path", "/")
-                             ws_host = plugin_opts.get("host", address)
-                             outbound["transport"] = {
-                                 "type": "ws",
-                                 "path": ws_path,
-                                 "headers": {"Host": ws_host}
-                             }
-                             # 检查 tls 标志或显式 tls=true
-                             if plugin_opts.get("tls") is True or plugin_opts.get("tls", "").lower() == "true":
-                                  tls_config = {"enabled": True}
-                                  sni = ws_host # 对插件使用 host 作为 SNI
-                                  if sni and not is_ip_address(sni):
-                                       tls_config["server_name"] = sni
-                                  # 添加 insecure 选项 for v2ray-plugin, 检查标志或显式 insecure=true
-                                  tls_config["insecure"] = plugin_opts.get("insecure") is True or plugin_opts.get("insecure", "").lower() == "true"
-                                  outbound["tls"] = tls_config
-                        # TODO: 可以添加对 obfs-local 等其他插件的支持 (如果 Sing-box 支持的话)
-
-                     except Exception as e:
-                          # 记录插件解析错误?
-                          # self.gui_queue.put(('log', f"  解析 SS 插件失败: {e} -> {link[:40]}..."))
-                          pass # 如果插件解析失败则忽略，将其视为普通 SS
-
-
-            # (新增) Hysteria v1 解析
             elif link.startswith("hysteria://"):
-                 hostname = parsed_url.hostname
-                 port = parsed_url.port
-                 # auth 可以是参数或 userinfo
-                 auth = params.get("auth") or parsed_url.username or parsed_url.password
-                 # SNI 是 'peer' 参数或 hostname
-                 sni_host = params.get("peer") or hostname
-                 insecure = params.get("insecure", "0") == "1"
-                 up_mbps_str = params.get("upmbps", "10") # 默认值?
-                 down_mbps_str = params.get("downmbps", "50")
-                 recv_window_conn = params.get("recv_window_conn") # 可选
-                 recv_window = params.get("recv_window")         # 可选
+                outbound = RealProxyAggregator._parse_singbox_hysteria(parsed_url, params, fragment)
 
-                 if not auth: return None # 需要 auth
-
-                 try:
-                     up_mbps = int(up_mbps_str)
-                     down_mbps = int(down_mbps_str)
-                 except ValueError:
-                     return None # 带宽无效
-
-                 outbound = {
-                     "type": "hysteria",
-                     "tag": fragment or f"hy_{hostname}_{port}", # 更具信息量的 tag
-                     "server": hostname,
-                     "server_port": port,
-                     "up_mbps": up_mbps,
-                     "down_mbps": down_mbps,
-                     "auth_str": auth, # Sing-box 使用 auth_str
-                     "tls": {
-                         "enabled": True, # Hy1 默认需要 TLS
-                         "insecure": insecure,
-                     }
-                 }
-                 if sni_host and not is_ip_address(sni_host):
-                     outbound["tls"]["server_name"] = sni_host
-                 # 可选参数
-                 if recv_window_conn:
-                     try: outbound["recv_window_conn"] = int(recv_window_conn)
-                     except ValueError: pass
-                 if recv_window:
-                     try: outbound["recv_window"] = int(recv_window)
-                     except ValueError: pass
-
-            # (修改) 完善 Hysteria2/Hy2 解析
             elif link.startswith(("hy2://", "hysteria2://")):
-                 hostname = parsed_url.hostname
-                 port = parsed_url.port
-                 # 密码应在 userinfo 部分
-                 password = parsed_url.username or parsed_url.password
-                 # SNI 是 'sni' 参数或 hostname
-                 sni_host = params.get("sni") or hostname
-                 insecure = params.get("insecure", "0") == "1"
-
-                 if not password: return None # 需要密码
-
-                 outbound = {
-                     "type": "hysteria2",
-                     "tag": fragment or f"hy2_{hostname}_{port}", # 更具信息量的 tag
-                     "server": hostname,
-                     "server_port": port,
-                     "password": password,
-                     "tls": {
-                         "enabled": True, # Hy2 默认需要 TLS
-                         "insecure": insecure,
-                     }
-                 }
-                 if sni_host and not is_ip_address(sni_host):
-                     outbound["tls"]["server_name"] = sni_host
-
-            # (新增) 显式跳过 SSR
+                outbound = RealProxyAggregator._parse_singbox_hysteria2(parsed_url, params, fragment)
+            
             elif link.startswith("ssr://"):
-                 # 可以选择性地记录日志
-                 # self.gui_queue.put(('log', f"  [Sing-box 跳过]: 不支持 SSR 协议 -> {link[:40]}..."))
-                 return None
-
+                return None # 显式跳过 SSR
 
             if outbound: # 如果成功解析了任何支持的协议
                 # 确保 tag 存在
                 if not outbound.get("tag"):
-                     # 生成一个更唯一的默认 tag
                      proto = outbound.get('type', 'unknown')
                      serv = outbound.get('server', 'noserver')
                      outbound["tag"] = f"{proto}_{serv}_{int(time.time()*1000)}"
                 return outbound
 
         except Exception as e:
-            # 记录详细的解析错误以供调试
-            # traceback_str = traceback.format_exc() # 获取完整的回溯信息
-            # self.gui_queue.put(('log', f"解析 {link[:30]}... 失败: {e}\n{traceback_str}")) # 调试行
+            # 记录详细的解析错误以供调试 (保持注释状态)
+            # traceback_str = traceback.format_exc() 
+            # self.gui_queue.put(('log', f"解析 {link[:30]}... 失败: {e}\n{traceback_str}"))
             return None
         return None
 
@@ -1041,7 +1039,7 @@ class RealProxyAggregator:
 class AggregatorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("代理聚合器 v6.1.9 (VLESS/SS ALPN修复)") # (修改) 标题
+        self.root.title("代理聚合器 v6.1.10 (代码重构)") # (修改) 标题
         self.root.geometry("850x980") 
         
         self.internal_github_token = "github_pat_" # 考虑使其可配置或移除占位符
@@ -1235,20 +1233,33 @@ class AggregatorApp:
         except tk.TclError:
              pass # 忽略写入已销毁控件的错误
 
-
+    # (v6.1.10) 优化 GUI 卡顿
     def _update_sub_links_text(self):
         # 如果列表非常大，这可能会有点慢，但对于几千个链接应该没问题
         # 先清除现有内容
         try:
             if hasattr(self, 'sub_links_text') and self.sub_links_text.winfo_exists():
                  self.sub_links_text.delete('1.0', tk.END)
-                 # 排序并连接，处理可能的大列表
+                 
+                 total_links = len(self.found_links)
+                 if total_links == 0:
+                     return
+
                  sorted_links = sorted(list(self.found_links))
-                 if sorted_links:
-                     # 尝试分块插入？对于非常大的列表可能更好
-                     # 为简单起见，暂时保留 join
+                 
+                 # (新增) GUI 冻结保护
+                 MAX_DISPLAY_LINKS = 5000 
+                 content_to_insert = ""
+                 
+                 if total_links > MAX_DISPLAY_LINKS:
+                     display_links = sorted_links[:MAX_DISPLAY_LINKS]
+                     content_to_insert = "\n".join(display_links)
+                     content_to_insert += f"\n\n... (警告: 仅显示前 {MAX_DISPLAY_LINKS} 条 / 共 {total_links} 条，以防 GUI 冻结) ..."
+                     self._append_log(f"警告: 找到 {total_links} 个链接，输入框中仅显示前 {MAX_DISPLAY_LINKS} 条。")
+                 else:
                      content_to_insert = "\n".join(sorted_links)
-                     self.sub_links_text.insert('1.0', content_to_insert)
+
+                 self.sub_links_text.insert('1.0', content_to_insert)
         except tk.TclError:
             self._append_log("!! 错误：更新订阅链接文本框时出错 (控件可能已关闭)")
 
@@ -1354,6 +1365,7 @@ class AggregatorApp:
                  self.executor = None # 重置执行器状态
             self.gui_queue.put(('task_done', 'search')) # 发送搜索任务完成信号
 
+    # (v6.1.10) 整合“中止时保存结果”逻辑
     def _processing_worker(self):
         try:
             input_lines = [u.strip() for u in self.sub_links_text.get('1.0', tk.END).strip().split('\n') if u.strip()]
@@ -1419,7 +1431,12 @@ class AggregatorApp:
                 self.executor.shutdown(wait=True)
                 self.executor = None
 
-            if self.stop_task_event.is_set(): return
+            # (*** 修改点 1 ***)
+            # 移除此处的 'if self.stop_task_event.is_set(): return'
+            # 即使下载被中止，也要继续处理已收集的 unique_nodes
+            if self.stop_task_event.is_set():
+                 self.gui_queue.put(('log', "下载任务已中止。继续处理已下载的节点..."))
+
 
             self.gui_queue.put(('log', f"\n下载完成。总共找到 {len(unique_nodes)} 个唯一节点。"))
             
@@ -1447,7 +1464,8 @@ class AggregatorApp:
                     self.gui_queue.put(('log', f"测速目标: {test_url}")) 
                     
                     self.local_ports_queue = queue.Queue()
-                    base_port = 10900 # 可以使用不同的基础端口？
+                    # (修改) 使用类常量
+                    base_port = self.aggregator.SINGBOX_BASE_PORT
                     for i in range(test_concurrency):
                         self.local_ports_queue.put(base_port + i)
                     
@@ -1470,7 +1488,7 @@ class AggregatorApp:
                     
                     self.gui_queue.put(('log', "步骤 1: 正在解析节点链接..."))
                     for node_link in final_node_list:
-                        if self.stop_task_event.is_set(): return # 在解析期间检查停止事件
+                        if self.stop_task_event.is_set(): break # 在解析期间检查停止事件
                         parsed = self.aggregator._parse_node_link_for_tcp(node_link)
                         if parsed and parsed[0] and parsed[1]:
                             nodes_to_test.append({'link': node_link, 'addr': parsed[0], 'port': parsed[1]})
@@ -1479,15 +1497,16 @@ class AggregatorApp:
                     
                     self.gui_queue.put(('log', f"解析完成: {len(nodes_to_test)} 个可测速, {parsing_errors} 个解析失败/不支持。"))
                     if not nodes_to_test:
-                        self.gui_queue.put(('log', "没有可 TCP Ping 的节点。")); return
-
-                    self.gui_queue.put(('log', f"步骤 2: 开始并发 TCP Ping {len(nodes_to_test)} 个节点..."))
-                    
-                    
-                    future_to_node = {
-                        self.executor.submit(self.aggregator._tcp_ping, node['addr'], node['port'], test_timeout): node['link']
-                        for node in nodes_to_test
-                    }
+                        self.gui_queue.put(('log', "没有可 TCP Ping 的节点。"));
+                        # (*** 修改点 ***) 如果没有可测速的，也应该继续处理 final_node_list
+                    else:
+                        self.gui_queue.put(('log', f"步骤 2: 开始并发 TCP Ping {len(nodes_to_test)} 个节点..."))
+                        
+                        
+                        future_to_node = {
+                            self.executor.submit(self.aggregator._tcp_ping, node['addr'], node['port'], test_timeout): node['link']
+                            for node in nodes_to_test
+                        }
 
                 # --- (通用) 结果收集 (使用 wait() 代替 as_completed) ---
                 results = [] 
@@ -1501,6 +1520,7 @@ class AggregatorApp:
 
                 active_futures_set = set(future_to_node.keys()) # 使用集合以便更快地移除
 
+                # (*** 修改点 ***) 仅在有任务时才进入循环
                 while active_futures_set:
                     if self.stop_task_event.is_set():
                          break # 如果已停止则退出循环
@@ -1544,46 +1564,51 @@ class AggregatorApp:
                 
                 # --- 结果收集循环结束 ---
 
-                # 如果循环因 stop_task() 退出，取消剩余的 future
+                # (*** 修改点 2 ***)
+                # 如果循环因 stop_task() 退出，取消剩余的 future，但不再 'return'
                 if self.stop_task_event.is_set():
                     self.gui_queue.put(('log', "测速任务被中止。"))
                     for future in active_futures_set: # 取消任何剩余的活动 future
                         future.cancel()
-                    return # 退出工作函数
+                    # (移除 'return') -> 继续处理已收集的 'results'
 
                 self.gui_queue.put(('log', "\n测速完成。正在按延迟排序..."))
                 
                 if not results: 
-                    self.gui_queue.put(('log', "未找到任何测速成功的节点。")); return
-                
-                results.sort(key=lambda x: x[0])
-                final_node_list = [link for delay, link in results]
-                
-                # 可选：如果添加了锚点并且它存活，则移除
-                anchor_was_alive = False
-                anchor_removed = False
-                # if test_mode == 'singbox' and final_node_list and "#TestAnchor" in final_node_list[0]:
-                #     anchor_was_alive = True
-                #     self.gui_queue.put(('log', f"[诊断]: '测试锚点' 存活，延迟: {results[0][0]:.2f} ms"))
-                #     if len(final_node_list) > 1:
-                #          final_node_list.pop(0)
-                #          results.pop(0)
-                #          anchor_removed = True
-                # elif test_mode == 'singbox':
-                #     self.gui_queue.put(('log', "[诊断]: '测试锚点' 测速失败。"))
-
-
-                if final_node_list:
-                     # 检查在移除锚点后列表是否变为空
-                    if not results and anchor_removed:
-                         self.gui_queue.put(('log', "筛选完毕！但移除锚点后无剩余节点。")); return
-                    elif not results: # 如果 final_node_list 非空，则不应发生，但做安全检查
-                         self.gui_queue.put(('log', "未找到任何测速成功的节点。")); return
-
-                    self.gui_queue.put(('log', f"筛选完毕！共 {len(final_node_list)} 个存活节点。最快延迟: {results[0][0]:.2f} ms"))
+                    self.gui_queue.put(('log', "未找到任何测速成功的节点。将使用原始列表（如果存在）。"));
+                    # (*** 修改点 ***) 不要在这里 return，让函数继续处理 final_node_list
                 else:
-                    # Occurs if only anchor was alive and removed
-                    self.gui_queue.put(('log', "未找到任何测速成功的节点。")); return
+                    results.sort(key=lambda x: x[0])
+                    final_node_list = [link for delay, link in results] # (*** 修改点 ***) 仅当有结果时才覆盖
+                
+                    # 可选：如果添加了锚点并且它存活，则移除
+                    anchor_was_alive = False
+                    anchor_removed = False
+                    # if test_mode == 'singbox' and final_node_list and "#TestAnchor" in final_node_list[0]:
+                    #     anchor_was_alive = True
+                    #     self.gui_queue.put(('log', f"[诊断]: '测试锚点' 存活，延迟: {results[0][0]:.2f} ms"))
+                    #     if len(final_node_list) > 1:
+                    #          final_node_list.pop(0)
+                    #          results.pop(0)
+                    #          anchor_removed = True
+                    # elif test_mode == 'singbox':
+                    #     self.gui_queue.put(('log', "[诊断]: '测试锚点' 测速失败。"))
+
+
+                    if final_node_list:
+                         # 检查在移除锚点后列表是否变为空
+                        if not results and anchor_removed:
+                             self.gui_queue.put(('log', "筛选完毕！但移除锚点后无剩余节点。")); 
+                             final_node_list = [] # (*** 修改点 ***) 明确设置为空列表
+                        elif not results: # 如果 final_node_list 非空，则不应发生，但做安全检查
+                             self.gui_queue.put(('log', "未找到任何测速成功的节点。"));
+                             final_node_list = [] # (*** 修改点 ***) 明确设置为空列表
+                        else:
+                             self.gui_queue.put(('log', f"筛选完毕！共 {len(final_node_list)} 个存活节点。最快延迟: {results[0][0]:.2f} ms"))
+                    else:
+                        # Occurs if only anchor was alive and removed
+                        self.gui_queue.put(('log', "未找到任何测速成功的节点。"));
+                        final_node_list = [] # (*** 修改点 ***) 明确设置为空列表
 
 
             # --- 测速逻辑结束 ---
@@ -1594,6 +1619,7 @@ class AggregatorApp:
                 self.gui_queue.put(('log', "测速未启用。按默认顺序生成结果..."))
             
             # 最终结果处理
+            # (*** 修改点 ***) 即使中止了，也会执行到这里
             if not final_node_list:
                  self.gui_queue.put(('log', "最终列表为空，无法生成结果。")); return
 
