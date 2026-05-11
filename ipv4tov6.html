@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IPv4 / IPv6 互转工具</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f9;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            width: 400px;
+            text-align: center;
+        }
+        h2 {
+            margin-top: 0;
+            color: #333;
+        }
+        .input-group {
+            margin-bottom: 20px;
+            text-align: left;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 14px;
+        }
+        .button-group {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            width: 48%;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .result-box {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            word-break: break-all;
+            min-height: 20px;
+            color: #333;
+        }
+        .error {
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>IP 地址转换</h2>
+    
+    <div class="input-group">
+        <label for="ipInput">输入 IPv4 或 IPv6 地址：</label>
+        <input type="text" id="ipInput" placeholder="例如: 192.168.1.1 或 ::ffff:c0a8:0101" autocomplete="off">
+    </div>
+
+    <div class="button-group">
+        <button onclick="convertToIpv6()">IPv4 转 IPv6</button>
+        <button onclick="convertToIpv4()">IPv6 转 IPv4</button>
+    </div>
+
+    <div class="result-box" id="resultBox">
+        等待转换...
+    </div>
+</div>
+
+<script>
+    // 验证 IPv4 地址格式
+    function isIPv4(ip) {
+        const regex = /^(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
+        return regex.test(ip);
+    }
+
+    // IPv4 转换为 IPv6 (十六进制映射格式)
+    function convertToIpv6() {
+        const input = document.getElementById('ipInput').value.trim();
+        const resultBox = document.getElementById('resultBox');
+
+        if (!isIPv4(input)) {
+            resultBox.innerHTML = '<span class="error">错误：请输入有效的 IPv4 地址。</span>';
+            return;
+        }
+
+        const parts = input.split('.');
+        const hexParts = parts.map(part => parseInt(part).toString(16).padStart(2, '0'));
+        
+        const ipv6 = `::ffff:${hexParts[0]}${hexParts[1]}:${hexParts[2]}${hexParts[3]}`;
+        resultBox.innerHTML = `<strong>转换结果 (IPv6):</strong><br>${ipv6}`;
+    }
+
+    // IPv6 转换为 IPv4
+    function convertToIpv4() {
+        const input = document.getElementById('ipInput').value.trim();
+        const resultBox = document.getElementById('resultBox');
+
+        // 处理格式 1: ::ffff:192.168.1.1 (混合格式)
+        const mixedMatch = /^::ffff:(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)$/i.exec(input);
+        if (mixedMatch) {
+            resultBox.innerHTML = `<strong>转换结果 (IPv4):</strong><br>${mixedMatch[1]}.${mixedMatch[2]}.${mixedMatch[3]}.${mixedMatch[4]}`;
+            return;
+        }
+
+        // 处理格式 2: ::ffff:c0a8:0101 (十六进制格式)
+        const hexMatch = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(input);
+        if (hexMatch) {
+            const part1 = hexMatch[1].padStart(4, '0');
+            const part2 = hexMatch[2].padStart(4, '0');
+            
+            const a = parseInt(part1.substring(0, 2), 16);
+            const b = parseInt(part1.substring(2, 4), 16);
+            const c = parseInt(part2.substring(0, 2), 16);
+            const d = parseInt(part2.substring(2, 4), 16);
+            
+            resultBox.innerHTML = `<strong>转换结果 (IPv4):</strong><br>${a}.${b}.${c}.${d}`;
+            return;
+        }
+
+        resultBox.innerHTML = '<span class="error">错误：请输入有效的 IPv4 映射的 IPv6 地址 (如 ::ffff:c0a8:0101 或 ::ffff:192.168.1.1)。</span>';
+    }
+</script>
+
+</body>
+</html>
